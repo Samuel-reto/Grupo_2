@@ -4,7 +4,8 @@ session_start();
 session_unset();
 session_destroy();
 
-$login_url = get_stylesheet_directory_uri() . '/index.php';
-header("Location: $login_url");
+$index_url = get_stylesheet_directory_uri() . '/index.php';
+header("Location: $index_url");
 exit;
 ?>
+

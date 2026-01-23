@@ -6,7 +6,8 @@ global $wpdb;
 require_once get_stylesheet_directory() . '/config.php';
 
 if (!isset($_SESSION['h2y_tipo']) || $_SESSION['h2y_tipo'] !== 'paciente') {
-    wp_redirect(home_url('/login-citas/'));
+    $login_url = get_stylesheet_directory_uri() . '/login.php';
+    header("Location: $login_url");
     exit;
 }
 
@@ -61,8 +62,8 @@ if ($_POST && isset($_POST['fecha']) && isset($_POST['hora'])) {
             'estado' => 'pendiente'
         ]);
         
-       $dashboard = get_stylesheet_directory_uri() . '/dashboard_paciente.php?success=nueva';
-header("Location: $dashboard");
+        $dashboard = get_stylesheet_directory_uri() . '/dashboard_paciente.php?success=nueva';
+        header("Location: $dashboard");
         exit;
     } else {
         $mensaje = "Fecha no válida";
@@ -78,36 +79,86 @@ if (es_dia_valido($fecha_sel)) {
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Nueva cita</title>
-    <link rel="stylesheet" href="<?= get_stylesheet_directory_uri(); ?>/style.css">
+    <title>Nueva cita - Health2You</title>
+    <link rel="stylesheet" href="<?= get_stylesheet_directory_uri(); ?>/styles.css">
 </head>
 <body style="background: linear-gradient(135deg, #e8f5e9, #c8e6c9);">
 <div class="page">
-    <h2>📅 Nueva cita</h2>
+    <div class="page-header">
+        <div>
+            <h2>📅 Nueva cita</h2>
+            <p class="small-muted">
+                Selecciona fecha y hora para tu consulta
+            </p>
+        </div>
+        <div>
+            <a href="<?= get_stylesheet_directory_uri(); ?>/dashboard_paciente.php" class="btn btn-secondary">
+                ← Volver
+            </a>
+        </div>
+    </div>
     
     <?php if ($mensaje): ?>
         <div class="alert alert-error"><?= $mensaje ?></div>
     <?php endif; ?>
     
-    <form method="post">
+    <div style="background: #fff8e1; border-left: 4px solid #f9a825; padding: 12px; margin-bottom: 20px; border-radius: 4px;">
+        <strong>ℹ️ Información:</strong> Las citas están disponibles de lunes a viernes, en horario de mañana (8:30-13:30) y tarde (16:00-19:00).
+    </div>
+    
+    <form method="get" style="background: white; padding: 20px; border-radius: 8px; margin-bottom: 16px;">
         <div class="form-group">
-            <label>Fecha</label>
-            <input type="date" name="fecha" value="<?= $fecha_sel ?>" min="<?= date('Y-m-d') ?>" required>
+            <label for="fecha">📅 Seleccionar fecha</label>
+            <input type="date" name="fecha" id="fecha" value="<?= $fecha_sel ?>" min="<?= date('Y-m-d') ?>" required>
         </div>
-        
-        <div class="form-group">
-            <label>Hora</label>
-            <select name="hora" required>
-                <option value="">Seleccionar...</option>
-                <?php foreach ($franjas_disponibles as $h): ?>
-                    <option value="<?= $h ?>"><?= $h ?></option>
-                <?php endforeach; ?>
-            </select>
-        </div>
-        
-        <button type="submit" class="btn">Reservar</button>
-        <a href="<?= get_stylesheet_directory_uri(); ?>/dashboard_paciente.php" class="btn btn-secondary">Volver</a>
+        <button type="submit" class="btn btn-secondary">Ver disponibilidad</button>
     </form>
+    
+    <?php if (!empty($franjas_disponibles)): ?>
+        <form method="post" style="background: white; padding: 20px; border-radius: 8px;">
+            <input type="hidden" name="fecha" value="<?= $fecha_sel ?>">
+            
+            <h3>🕒 Horarios disponibles para <?= date('d/m/Y', strtotime($fecha_sel)) ?></h3>
+            
+            <div class="form-group">
+                <label>Selecciona una hora:</label>
+                <select name="hora" required style="width: 100%;">
+                    <option value="">Seleccionar...</option>
+                    <?php foreach ($franjas_disponibles as $h): ?>
+                        <option value="<?= $h ?>"><?= $h ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            
+            <button type="submit" class="btn">✓ Confirmar cita</button>
+            <a href="<?= get_stylesheet_directory_uri(); ?>/dashboard_paciente.php" class="btn btn-secondary" style="margin-left: 8px;">
+                Cancelar
+            </a>
+        </form>
+    <?php elseif ($_GET['fecha'] ?? false): ?>
+        <div style="background: #ffebee; padding: 20px; border-radius: 8px; text-align: center;">
+            <div style="font-size: 48px; margin-bottom: 16px;">❌</div>
+            <h3>No hay horarios disponibles</h3>
+            <p>No hay citas disponibles para esta fecha. Por favor, selecciona otra fecha.</p>
+        </div>
+    <?php else: ?>
+        <div style="background: #e3f2fd; padding: 20px; border-radius: 8px; text-align: center;">
+            <div style="font-size: 48px; margin-bottom: 16px;">📅</div>
+            <h3>Selecciona una fecha</h3>
+            <p>Usa el formulario superior para ver las horas disponibles.</p>
+        </div>
+    <?php endif; ?>
+    
+    <div style="margin-top: 24px; padding: 16px; background: #f5f5f5; border-radius: 8px;">
+        <h4 style="margin-top: 0;">Información importante:</h4>
+        <ul style="font-size: 14px; color: #666; line-height: 1.8;">
+            <li>Las citas tienen una duración de 20 minutos</li>
+            <li>Puedes modificar o cancelar tu cita desde "Mis citas"</li>
+            <li>Te recomendamos llegar 5 minutos antes de tu cita</li>
+            <li>No se realizan citas los fines de semana ni festivos</li>
+        </ul>
+    </div>
 </div>
 </body>
 </html>
+

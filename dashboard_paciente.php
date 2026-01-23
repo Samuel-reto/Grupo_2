@@ -5,9 +5,8 @@ if (!session_id()) session_start();
 global $wpdb;
 require_once get_stylesheet_directory() . '/config.php';
 
-// Verificar sesión
 if (!isset($_SESSION['h2y_tipo']) || $_SESSION['h2y_tipo'] !== 'paciente') {
-    $login_url = get_stylesheet_directory_uri() . '/index.php';
+    $login_url = get_stylesheet_directory_uri() . '/login.php';
     header("Location: $login_url");
     exit;
 }
@@ -28,7 +27,6 @@ if (isset($_GET['success'])) {
             break;
     }
 }
-
 
 // Citas pendientes
 $citas_pendientes = $wpdb->get_results($wpdb->prepare("
@@ -66,7 +64,7 @@ $citas_pasadas = $wpdb->get_results($wpdb->prepare("
 <head>
     <meta charset="<?php bloginfo('charset'); ?>">
     <title>Mis citas - Health2You</title>
-    <link rel="stylesheet" href="<?php echo get_stylesheet_directory_uri(); ?>/style.css">
+    <link rel="stylesheet" href="<?php echo get_stylesheet_directory_uri(); ?>/styles.css">
     <?php wp_head(); ?>
 </head>
 <body style="background: linear-gradient(135deg, #e8f5e9, #c8e6c9); padding: 16px;">
@@ -78,7 +76,8 @@ $citas_pasadas = $wpdb->get_results($wpdb->prepare("
                 Bienvenida, <strong><?= htmlspecialchars($_SESSION['h2y_paciente_nombre']) ?></strong>
             </p>
         </div>
-        <div>
+        <div style="display: flex; gap: 8px;">
+            <a href="<?= get_stylesheet_directory_uri(); ?>/index.php" class="btn btn-secondary">← Inicio</a>
             <a href="<?= get_stylesheet_directory_uri(); ?>/logout.php" class="btn btn-secondary">Cerrar sesión</a>
         </div>
     </div>
@@ -134,6 +133,33 @@ $citas_pasadas = $wpdb->get_results($wpdb->prepare("
                 <?php endforeach; ?>
             </tbody>
         </table>
+    <?php endif; ?>
+
+    <?php if (!empty($citas_pasadas)): ?>
+        <h3>📋 Historial reciente</h3>
+        <table class="table">
+            <thead>
+                <tr><th>Fecha</th><th>Médico</th><th>Estado</th></tr>
+            </thead>
+            <tbody>
+                <?php foreach ($citas_pasadas as $c): ?>
+                    <tr>
+                        <td><?= $c->fecha_hora_inicio ?></td>
+                        <td><?= htmlspecialchars($c->medico_nombre) ?></td>
+                        <td><span class="badge badge-<?= $c->estado ?>"><?= $c->estado ?></span></td>
+                    </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    <?php endif; ?>
+
+    <?php if (empty($citas_pendientes) && empty($citas_hoy) && empty($citas_pasadas)): ?>
+        <div style="text-align: center; padding: 48px; color: #666;">
+            <div style="font-size: 48px; margin-bottom: 16px;">📅</div>
+            <h3>No tienes citas registradas</h3>
+            <p>Solicita tu primera cita médica usando el botón superior.</p>
+            <a href="<?= get_stylesheet_directory_uri(); ?>/nueva_cita.php" class="btn" style="margin-top: 16px;">Empezar</a>
+        </div>
     <?php endif; ?>
 </div>
 <?php wp_footer(); ?>

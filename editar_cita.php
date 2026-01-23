@@ -6,7 +6,7 @@ global $wpdb;
 require_once get_stylesheet_directory() . '/config.php';
 
 if (!isset($_SESSION['h2y_tipo'])) {
-    $login_url = get_stylesheet_directory_uri() . '/index.php';
+    $login_url = get_stylesheet_directory_uri() . '/login.php';
     header("Location: $login_url");
     exit;
 }
@@ -19,7 +19,7 @@ if (!$cita) {
 }
 
 $mensaje = "";
-$tipo_mensaje = "error"; // 'error' o 'success'
+$tipo_mensaje = "error";
 
 // CANCELAR CITA
 if (isset($_GET['accion']) && $_GET['accion'] === 'cancelar') {
@@ -83,8 +83,8 @@ $medico = $wpdb->get_row($wpdb->prepare(
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Modificar cita</title>
-    <link rel="stylesheet" href="<?= get_stylesheet_directory_uri(); ?>/style.css">
+    <title>Modificar cita - Health2You</title>
+    <link rel="stylesheet" href="<?= get_stylesheet_directory_uri(); ?>/styles.css">
     <script>
         function confirmarCancelacion() {
             return confirm('⚠️ ¿Estás seguro de que deseas CANCELAR esta cita?\n\nEsta acción no se puede deshacer.');
@@ -147,16 +147,16 @@ $medico = $wpdb->get_row($wpdb->prepare(
     </form>
     
     <!-- SECCIÓN CANCELAR CITA -->
-    <div style="background: #ffebee; border: 1px solid #ef5350; padding: 20px; border-radius: 8px;">
-        <h3 style="margin-top: 0; color: #c62828;">🗑️ Zona peligrosa</h3>
-        <p style="color: #666; font-size: 14px;">
+    <div class="danger-zone">
+        <h3>🗑️ Zona peligrosa</h3>
+        <p>
             Si no puedes asistir a esta cita, puedes cancelarla. Podrás solicitar una nueva cita en otro momento.
         </p>
         
         <a href="?id=<?= $cita_id ?>&accion=cancelar" 
            onclick="return confirmarCancelacion();"
-           class="btn" 
-           style="background: linear-gradient(135deg, #c62828, #d32f2f); margin-top: 8px;">
+           class="btn btn-danger" 
+           style="margin-top: 8px;">
             ❌ Cancelar esta cita
         </a>
     </div>

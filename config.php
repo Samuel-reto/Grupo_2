@@ -11,4 +11,3 @@ define('H2Y_CITA', 'cita');
 define('H2Y_JUSTIFICANTE', 'justificante');
 define('H2Y_VISTA', 'vista_citas_completas');
 ?>
-
