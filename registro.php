@@ -178,7 +178,7 @@ if ($registro_exitoso) {
             </div>
 
             <button type="submit" class="btn">Crear cuenta</button>
-            <a href="<?= get_stylesheet_directory_uri(); ?>/login.php" 
+            <a href="<?= get_stylesheet_directory_uri(); ?>/index.php" 
                class="btn btn-secondary" style="margin-left: 10px;">
                 Volver al login
             </a>
@@ -222,4 +222,5 @@ if ($registro_exitoso) {
 <?php wp_footer(); ?>
 </body>
 </html>
+
 
