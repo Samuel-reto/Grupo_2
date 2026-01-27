@@ -1,6 +1,8 @@
 <?php
 ob_start();
-if (!defined('ABSPATH')) exit;
+if (!defined('ABSPATH')) {
+    require_once('../../../wp-load.php');
+}
 if (!session_id()) session_start();
 
 global $wpdb;
@@ -141,3 +143,4 @@ ob_end_flush();
 <?php wp_footer(); ?>
 </body>
 </html>
+
