@@ -1,5 +1,5 @@
 -- =====================================================
--- DDL MySQL RDS - Citas Médicas + TELÉFONO
+-- DDL MySQL RDS - Citas Médicas + TELÉFONO + PASSWORD_HASH
 -- Convertido desde PostgreSQL para compatibilidad MySQL
 -- =====================================================
 
@@ -8,10 +8,11 @@ DROP TABLE IF EXISTS justificante;
 DROP TABLE IF EXISTS cita;
 DROP TABLE IF EXISTS paciente;
 DROP TABLE IF EXISTS medico;
+
 DROP TRIGGER IF EXISTS trigger_justificante;
 DROP VIEW IF EXISTS vista_citas_completas;
 
--- 2. Crear tablas con AUTO_INCREMENT
+-- 2. Crear tablas con AUTO_INCREMENT + password_hash integrado
 CREATE TABLE paciente (
   paciente_id INT AUTO_INCREMENT PRIMARY KEY,
   nombre VARCHAR(100) NOT NULL,
@@ -19,6 +20,7 @@ CREATE TABLE paciente (
   numero_tsi VARCHAR(20) UNIQUE,
   telefono VARCHAR(20),
   email VARCHAR(100),
+  password_hash VARCHAR(255) NOT NULL,
   fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -27,7 +29,8 @@ CREATE TABLE medico (
   nombre VARCHAR(100) NOT NULL,
   apellidos VARCHAR(100) NOT NULL,
   colegiado VARCHAR(20) UNIQUE NOT NULL,
-  especialidad VARCHAR(100) NOT NULL
+  especialidad VARCHAR(100) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE cita (
@@ -102,23 +105,12 @@ JOIN paciente p ON c.paciente_id = p.paciente_id
 JOIN medico m ON c.medico_id = m.medico_id
 LEFT JOIN justificante j ON c.cita_id = j.cita_id;
 
--- 6. Datos de prueba con teléfono (COMENTADOS - descomentar si necesitas)
+-- 6. Datos de prueba con teléfono y password_hash ejemplo (COMENTADOS - descomentar si necesitas)
 /*
-INSERT INTO paciente (nombre, apellidos, numero_tsi, telefono, email) VALUES
-('María', 'García López', 'CANT390123456789', '600123456', NULL),
-('Juan', 'Pérez Martínez', 'CANT391234567890', '942765432', 'juan@email.com'),
-('Ana', 'Rodríguez Torres', 'CANT392345678901', '600987654', NULL);
+INSERT INTO paciente (nombre, apellidos, numero_tsi, telefono, email, password_hash) VALUES
+('María', 'García López', 'CANT390123456789', '600123456', NULL, '$2y$10$demo_hash_paciente'),
+('Juan', 'Pérez Martínez', 'CANT391234567890', '942765432', 'juan@email.com', '$2y$10$demo_hash_juan');
 
-INSERT INTO medico (nombre, apellidos, colegiado, especialidad) VALUES
-('Dr. Carlos', 'Sánchez Ruiz', '313103795', 'Medicina General'),
-('Dra. Laura', 'Fernández Gómez', '280234567', 'Cardiología'),
-('Dr. Miguel', 'López Herrera', '190876543', 'Pediatría');
-
-INSERT INTO cita (paciente_id, medico_id, fecha_hora_inicio, fecha_hora_fin, estado) VALUES
-(1, 1, '2026-01-21 10:00:00', '2026-01-21 10:20:00', 'pendiente'),
-(2, 2, '2026-01-20 11:00:00', '2026-01-20 11:20:00', 'pendiente'),
-(3, 3, '2026-01-20 15:30:00', '2026-01-20 15:50:00', 'pendiente');
-
--- Verificar con teléfono
-SELECT * FROM vista_citas_completas;
+INSERT INTO medico (nombre, apellidos, colegiado, especialidad, password_hash) VALUES
+('Dr. Carlos', 'Sánchez Ruiz', '313103795', 'Medicina General', '$2y$10$demo_hash_medico');
 */
