@@ -29,6 +29,7 @@ CREATE TABLE medico (
   nombre VARCHAR(100) NOT NULL,
   apellidos VARCHAR(100) NOT NULL,
   colegiado VARCHAR(20) UNIQUE NOT NULL,
+  email VARCHAR(255) NOT NULL,
   especialidad VARCHAR(100) NOT NULL,
   password_hash VARCHAR(255) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
