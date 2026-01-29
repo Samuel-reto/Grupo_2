@@ -43,7 +43,7 @@ function enviar_codigo_email($email, $codigo, $nombre) {
         $mail->Host       = 'smtp.gmail.com';
         $mail->SMTPAuth   = true;
         $mail->Username   = 'health2you.asir2@gmail.com';
-        $mail->Password   = 'rxvj ayak igfz wijh'; // ← CAMBIAR
+        $mail->Password   = 'pvwt trec wdge gzkr'; // ← CAMBIAR
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
         $mail->Port       = 587;
         $mail->CharSet    = 'UTF-8';
@@ -271,3 +271,4 @@ ob_end_flush();
 <?php wp_footer(); ?>
 </body>
 </html>
+
