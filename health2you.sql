@@ -1,12 +1,14 @@
 -- ========================================
--- Script para levantar DB WordPress + Health2You
+-- Script modificado: Crea DB health2you para WordPress + Health2You
+-- NO DROP para evitar borrar DB wordpress existente
 -- Generado desde esquema INFORMATION_SCHEMA
--- Ejecutar en MySQL nuevo: CREATE DATABASE wordpress; USE wordpress;
 -- ========================================
 
-DROP DATABASE IF EXISTS `wordpress`;
-CREATE DATABASE `wordpress` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE `wordpress`;
+-- Crear la nueva base de datos health2you (si no existe)
+CREATE DATABASE IF NOT EXISTS `health2you` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- Usar la nueva DB
+USE `health2you`;
 
 -- TABLA: cita
 CREATE TABLE `cita` (
@@ -66,18 +68,18 @@ CREATE TABLE `paciente` (
 
 -- VISTA: vista_citas_completas
 CREATE OR REPLACE VIEW `vista_citas_completas` AS
-SELECT 
-    c.cita_id, p.numero_tsi, p.telefono,
-    CONCAT(p.nombre, ' ', p.apellidos) AS paciente_nombre,
-    c.medico_id, CONCAT(m.nombre, ' ', m.apellidos) AS medico_nombre,
-    m.especialidad, c.fecha_hora_inicio, c.estado,
-    j.numero_serie, j.fecha_emision
+SELECT
+  c.cita_id, p.numero_tsi, p.telefono,
+  CONCAT(p.nombre, ' ', p.apellidos) AS paciente_nombre,
+  c.medico_id, CONCAT(m.nombre, ' ', m.apellidos) AS medico_nombre,
+  m.especialidad, c.fecha_hora_inicio, c.estado,
+  j.numero_serie, j.fecha_emision
 FROM cita c
 JOIN paciente p ON c.paciente_id = p.paciente_id
 JOIN medico m ON c.medico_id = m.medico_id
 LEFT JOIN justificante j ON c.cita_id = j.cita_id;
 
--- TABLAS WORDPRESS (estándar, solo las principales)
+-- TABLAS WORDPRESS (prefijo wp_ por defecto)
 CREATE TABLE `wp_options` (
   `option_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
   `option_name` varchar(191) NOT NULL,
@@ -105,7 +107,6 @@ CREATE TABLE `wp_users` (
   KEY `user_email` (`user_email`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Otras tablas WP (resumidas - ejecutar mysqldump completo para todas)
 CREATE TABLE `wp_posts` (
   `ID` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
   `post_author` bigint(20) unsigned NOT NULL DEFAULT 0,
@@ -120,24 +121,5 @@ CREATE TABLE `wp_posts` (
   `post_password` varchar(255) NOT NULL DEFAULT '',
   `post_name` varchar(200) NOT NULL DEFAULT '',
   `post_modified` datetime NOT NULL DEFAULT '0000-00-00 00:00:00',
-  `post_modified_gmt` datetime NOT NULL DEFAULT '0000-00-00 00:00:00',
-  `post_content_filtered` longtext NOT NULL,
-  `post_parent` bigint(20) unsigned NOT NULL DEFAULT 0,
-  `guid` varchar(255) NOT NULL DEFAULT '',
-  `menu_order` int(11) NOT NULL DEFAULT 0,
-  `post_type` varchar(20) NOT NULL DEFAULT 'post',
-  `post_mime_type` varchar(100) NOT NULL DEFAULT '',
-  `comment_count` bigint(20) NOT NULL DEFAULT 0,
-  PRIMARY KEY (`ID`),
-  KEY `post_name` (`post_name`),
-  KEY `post_parent` (`post_parent`),
-  KEY `post_type` (`post_type`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `post_modified_gmt`
 
--- INSERT DATOS EJEMPLO (agrega tus datos reales después)
-INSERT INTO `medico` (`nombre`, `apellidos`, `email`, `colegiado`, `especialidad`, `password_hash`) 
-VALUES ('Juan', 'Pérez', 'juan@clinic.com', '123456', 'Cardiología', '$2y$10$demo_hash');
-
--- ========================================
--- ¡Script listo! Ejecutar completo en nuevo MySQL
--- ========================================
