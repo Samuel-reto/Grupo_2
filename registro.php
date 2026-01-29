@@ -20,7 +20,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email = sanitize_email($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
     $password_confirm = $_POST['password_confirm'] ?? '';
-    
+
     if (empty($nombre) || empty($apellidos) || empty($tsi) || empty($password)) {
         $error = "Todos los campos obligatorios deben completarse.";
     } elseif (strlen($tsi) < 12) {
@@ -33,12 +33,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $existe = $wpdb->get_var($wpdb->prepare(
             "SELECT COUNT(*) FROM " . H2Y_PACIENTE . " WHERE numero_tsi = %s", $tsi
         ));
-        
+
         if ($existe > 0) {
             $error = "Este número TSI ya está registrado.";
         } else {
             $password_hash = password_hash($password, PASSWORD_DEFAULT);
-            
+
             $resultado = $wpdb->insert(H2Y_PACIENTE, [
                 'nombre' => $nombre,
                 'apellidos' => $apellidos,
@@ -47,7 +47,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'email' => $email,
                 'password_hash' => $password_hash
             ]);
-            
+
             if ($resultado) {
                 $registro_exitoso = true;
                 $nombre_usuario = $nombre;
@@ -132,19 +132,19 @@ if ($registro_exitoso) {
         <form method="post">
             <div class="form-group">
                 <label for="nombre">Nombre *</label>
-                <input type="text" name="nombre" id="nombre" 
+                <input type="text" name="nombre" id="nombre"
                        value="<?= htmlspecialchars($_POST['nombre'] ?? '') ?>" required>
             </div>
 
             <div class="form-group">
                 <label for="apellidos">Apellidos *</label>
-                <input type="text" name="apellidos" id="apellidos" 
+                <input type="text" name="apellidos" id="apellidos"
                        value="<?= htmlspecialchars($_POST['apellidos'] ?? '') ?>" required>
             </div>
 
             <div class="form-group">
                 <label for="numero_tsi">Nº Tarjeta Sanitaria (TSI) *</label>
-                <input type="text" name="numero_tsi" id="numero_tsi" 
+                <input type="text" name="numero_tsi" id="numero_tsi"
                        placeholder="CANT390123456789"
                        value="<?= htmlspecialchars($_POST['numero_tsi'] ?? '') ?>" required>
                 <small class="small-muted">Formato: 16 caracteres (ej. CANT390123456789)</small>
@@ -152,33 +152,33 @@ if ($registro_exitoso) {
 
             <div class="form-group">
                 <label for="telefono">Teléfono</label>
-                <input type="tel" name="telefono" id="telefono" 
+                <input type="tel" name="telefono" id="telefono"
                        placeholder="942123456"
                        value="<?= htmlspecialchars($_POST['telefono'] ?? '') ?>">
             </div>
 
             <div class="form-group">
                 <label for="email">Email</label>
-                <input type="email" name="email" id="email" 
+                <input type="email" name="email" id="email"
                        placeholder="tunombre@email.com"
                        value="<?= htmlspecialchars($_POST['email'] ?? '') ?>">
             </div>
 
             <div class="form-group">
                 <label for="password">Contraseña *</label>
-                <input type="password" name="password" id="password" 
+                <input type="password" name="password" id="password"
                        minlength="4" required>
                 <small class="small-muted">Mínimo 4 caracteres</small>
             </div>
 
             <div class="form-group">
                 <label for="password_confirm">Confirmar contraseña *</label>
-                <input type="password" name="password_confirm" id="password_confirm" 
+                <input type="password" name="password_confirm" id="password_confirm"
                        minlength="4" required>
             </div>
 
             <button type="submit" class="btn">Crear cuenta</button>
-            <a href="<?= get_stylesheet_directory_uri(); ?>/index.php" 
+            <a href="<?= get_stylesheet_directory_uri(); ?>/index.php"
                class="btn btn-secondary" style="margin-left: 10px;">
                 Volver al login
             </a>
@@ -197,20 +197,20 @@ if ($registro_exitoso) {
             <li>Recibir recordatorios de citas</li>
             <li>Acceder desde cualquier dispositivo</li>
         </ul>
-        
+
         <h3 style="margin-top: 24px;">Protección de datos</h3>
         <p class="small-muted">
-            Tus datos están protegidos según la LOPD y RGPD. Solo el personal sanitario autorizado 
+            Tus datos están protegidos según la LOPD y RGPD. Solo el personal sanitario autorizado
             de Health2You tendrá acceso a tu información médica.
         </p>
-        
+
         <p class="small-muted" style="margin-top: 16px;">
             <strong>¿Ya tienes cuenta?</strong><br>
             <a href="<?= get_stylesheet_directory_uri(); ?>/login.php" style="color: var(--primary);">
                 Inicia sesión aquí
             </a>
         </p>
-        
+
         <p class="small-muted" style="margin-top: 16px;">
             <strong>¿Eres profesional sanitario?</strong><br>
             <a href="<?= get_stylesheet_directory_uri(); ?>/registro_medico.php" style="color: var(--primary);">
