@@ -10,10 +10,9 @@ require_once get_stylesheet_directory() . '/config.php';
 
 $error = "";
 
-/* ==========================================================
-   2FA DESACTIVADO (PHPMailer + funciones)
-   Si algún día lo reactivas, descomenta todo este bloque.
-==========================================================
+/*==========================================================
+   2FA ACTIVADO (PHPMailer + funciones)
+==========================================================*/
 
 $phpmailer_loaded = false;
 
@@ -35,31 +34,114 @@ use PHPMailer\PHPMailer\SMTP;
 function generar_codigo_2fa() {
     return str_pad(rand(0, 999999), 6, '0', STR_PAD_LEFT);
 }
-
 function enviar_codigo_email($email, $codigo, $nombre) {
-    global $phpmailer_loaded;
-    if (!$phpmailer_loaded) return false;
-
-    $mail = new PHPMailer(true);
     try {
+        $mail = new PHPMailer(true);
         $mail->isSMTP();
-        $mail->Host = 'smtp.gmail.com';
+        $mail->Host = SMTP_HOST;
         $mail->SMTPAuth = true;
-        $mail->Username = 'health2you.asir2@gmail.com';
-
-        // IMPORTANTE: no dejes credenciales aquí, usa config.php o variables de entorno
-        // $mail->Password = 'TU_APP_PASSWORD';
-
+        $mail->Username = SMTP_USERNAME;
+        $mail->Password = SMTP_PASSWORD;
         $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-        $mail->Port = 587;
+        $mail->Port = SMTP_PORT;
         $mail->CharSet = 'UTF-8';
 
-        $mail->setFrom('health2you.asir2@gmail.com', 'Health2You');
+        $mail->setFrom(SMTP_FROM_EMAIL, SMTP_FROM_NAME);
         $mail->addAddress($email, $nombre);
         $mail->isHTML(true);
-        $mail->Subject = 'Health2You - Código 2FA';
-        $mail->Body = "Tu código: <b>$codigo</b>";
-        $mail->AltBody = "Tu código: $codigo";
+        $mail->Subject = '🔐 Tu código de verificación - Health2You';
+        
+        $mail->Body = '
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, \'Segoe UI\', Arial, sans-serif; background-color: #f5f7fa;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f5f7fa; padding: 40px 20px;">
+                <tr>
+                    <td align="center">
+                        <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); overflow: hidden;">
+                            
+                            <tr>
+                                <td style="background: linear-gradient(135deg, #0f9d58 0%, #0d8549 100%); padding: 40px 30px; text-align: center;">
+                                    <h1 style="margin: 0; color: #ffffff; font-size: 32px; font-weight: 600; letter-spacing: -0.5px;">
+                                        🏥 Health2You
+                                    </h1>
+                                    <p style="margin: 10px 0 0 0; color: rgba(255,255,255,0.9); font-size: 16px;">
+                                        Verificación de seguridad
+                                    </p>
+                                </td>
+                            </tr>
+                            
+                            <tr>
+                                <td style="padding: 40px 30px;">
+                                    <p style="margin: 0 0 20px 0; font-size: 18px; color: #2c3e50; line-height: 1.6;">
+                                        Hola <strong style="color: #0f9d58;">' . htmlspecialchars($nombre) . '</strong>,
+                                    </p>
+                                    
+                                    <p style="margin: 0 0 30px 0; font-size: 15px; color: #5a6c7d; line-height: 1.6;">
+                                        Has solicitado acceder a tu cuenta de Health2You. Para completar el inicio de sesión, utiliza el siguiente código de verificación:
+                                    </p>
+                                    
+                                    <table width="100%" cellpadding="0" cellspacing="0">
+                                        <tr>
+                                            <td align="center" style="padding: 30px 0;">
+                                                <div style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border: 3px solid #0f9d58; border-radius: 12px; padding: 30px 40px; display: inline-block;">
+                                                    <p style="margin: 0 0 8px 0; font-size: 14px; color: #2e7d32; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;">
+                                                        Tu código de verificación
+                                                    </p>
+                                                    <p style="margin: 0; font-size: 42px; font-weight: bold; color: #0f9d58; letter-spacing: 4px; font-family: \'Courier New\', monospace;">
+                                                        ' . $codigo . '
+                                                    </p>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                    
+                                    <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #fff9e6; border-left: 4px solid #ffc107; border-radius: 8px; margin-top: 30px;">
+                                        <tr>
+                                            <td style="padding: 20px;">
+                                                <p style="margin: 0 0 10px 0; font-size: 14px; color: #856404; font-weight: 600;">
+                                                    ⏱️ Importante:
+                                                </p>
+                                                <ul style="margin: 0; padding-left: 20px; font-size: 14px; color: #856404; line-height: 1.8;">
+                                                    <li>Este código es <strong>válido por 5 minutos</strong></li>
+                                                    <li>No compartas este código con nadie</li>
+                                                    <li>Si no solicitaste este código, ignora este email</li>
+                                                </ul>
+                                            </td>
+                                        </tr>
+                                    </table>
+                                    
+                                    <p style="margin: 30px 0 0 0; font-size: 14px; color: #7f8c8d; line-height: 1.6;">
+                                        Si tienes problemas o no solicitaste este código, contacta con nuestro equipo de soporte.
+                                    </p>
+                                </td>
+                            </tr>
+                            
+                            <tr>
+                                <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e9ecef;">
+                                    <p style="margin: 0 0 10px 0; font-size: 16px; color: #2c3e50; font-weight: 600;">
+                                        Health2You - Tu salud, nuestra prioridad
+                                    </p>
+                                    <p style="margin: 0; font-size: 13px; color: #95a5a6; line-height: 1.6;">
+                                        Este es un mensaje automático, por favor no respondas a este correo.<br>
+                                        © ' . date('Y') . ' Health2You. Todos los derechos reservados.
+                                    </p>
+                                </td>
+                            </tr>
+                            
+                        </table>
+                    </td>
+                </tr>
+            </table>
+        </body>
+        </html>';
+        
+        $mail->AltBody = "Hola $nombre,\n\nTu código de verificación de Health2You es: $codigo\n\nEste código es válido por 5 minutos.\n\nSi no solicitaste este código, ignora este email.";
+
         $mail->send();
         return true;
     } catch (Exception $e) {
@@ -67,8 +149,6 @@ function enviar_codigo_email($email, $codigo, $nombre) {
         return false;
     }
 }
-
-========================================================== */
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $tipo = sanitize_text_field($_POST['tipo_usuario'] ?? 'paciente');
@@ -78,59 +158,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (empty($id) || empty($pass)) {
         $error = "Completa todos los campos.";
 
-    } elseif ($tipo === 'paciente') {
+} elseif ($tipo === 'paciente') {
 
-        // =========================
-        // LOGIN NORMAL PACIENTE (SIN 2FA)
-        // =========================
-        $paciente = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM " . H2Y_PACIENTE . " WHERE numero_tsi = %s",
-            $id
-        ));
+    // =========================
+    // LOGIN PACIENTE CON 2FA
+    // =========================
+    $paciente = $wpdb->get_row($wpdb->prepare(
+        "SELECT * FROM " . H2Y_PACIENTE . " WHERE numero_tsi = %s",
+        $id
+    ));
 
-        if (!$paciente) {
-            $error = "TSI no encontrado.";
-        } elseif (!password_verify($pass, $paciente->password_hash)) {
-            $error = "Contraseña incorrecta.";
-        } else {
-            // ✅ Sesión paciente (final)
-            $_SESSION['h2y_tipo'] = 'paciente';
-            $_SESSION['h2y_paciente_id'] = $paciente->paciente_id;
-            $_SESSION['h2y_paciente_nombre'] = $paciente->nombre . ' ' . $paciente->apellidos;
-
-            // Redirección a dashboard paciente
-            wp_safe_redirect(get_stylesheet_directory_uri() . '/dashboard_paciente.php');
-            exit;
-        }
-
-        /* =========================
-           2FA DESACTIVADO - BLOQUE ORIGINAL
-           (si lo reactivas, sustituye el "else" de arriba por esto)
-        =========================
-        } elseif (empty($paciente->email)) {
-            $error = "Email requerido para 2FA. Regístrate de nuevo.";
-        } else {
-            $codigo = generar_codigo_2fa();
-            $_SESSION['h2y_2fa'] = [
-                'codigo' => $codigo,
-                'expira' => time() + 300,
-                'paciente_id' => $paciente->paciente_id,
-                'nombre' => $paciente->nombre . ' ' . $paciente->apellidos
-            ];
-
-            if (enviar_codigo_email($paciente->email, $codigo, $_SESSION['h2y_2fa']['nombre'])) {
-                wp_safe_redirect(get_stylesheet_directory_uri() . '/verificar_2fa.php');
-                exit;
-            } else {
-                $error = "Error email 2FA. Revisa spam.";
-            }
-        }
-        ========================= */
-
+    if (!$paciente) {
+        $error = "TSI no encontrado.";
+    } elseif (!password_verify($pass, $paciente->password_hash)) {
+        $error = "Contraseña incorrecta.";
+    } elseif (empty($paciente->email)) {
+        $error = "Email requerido para 2FA. Regístrate de nuevo.";
     } else {
+        // Generar código y guardar en sesión
+        $codigo = generar_codigo_2fa();
+        
+        $_SESSION['codigo_2fa'] = $codigo;
+        $_SESSION['codigo_2fa_expira'] = time() + 300;
+        $_SESSION['paciente_temp_id'] = $paciente->paciente_id;
+        $_SESSION['paciente_temp_nombre'] = $paciente->nombre . ' ' . $paciente->apellidos;
+        $_SESSION['paciente_temp_email'] = $paciente->email;
+        $_SESSION['tipo_temp'] = 'paciente';
+
+        // Enviar código por email
+        if (enviar_codigo_email($paciente->email, $codigo, $_SESSION['paciente_temp_nombre'])) {
+            wp_safe_redirect(get_stylesheet_directory_uri() . '/verificar_2fa.php');
+            exit;
+        } else {
+            $error = "Error al enviar email 2FA. Revisa spam o contacta soporte.";
+        }
+    }
+
+} else {
+
 
         // =========================
-        // MÉDICO (directo)
+        // MÉDICO (directo, sin 2FA)
         // =========================
         $medico = $wpdb->get_row($wpdb->prepare(
             "SELECT * FROM " . H2Y_MEDICO . " WHERE colegiado = %s",
@@ -219,15 +287,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
 
     <div class="right">
-        <h2>Acceso</h2>
+        <h2>Acceso seguro</h2>
         <p class="small-muted">Pacientes y profesionales acceden con su identificador y contraseña.</p>
         <ul class="helper-list">
-            <li>Paciente: TSI + contraseña</li>
-            <li>Médico: colegiado + contraseña</li>
+            <li>✅ Paciente: TSI + contraseña (con 2FA)</li>
+            <li>✅ Médico: colegiado + contraseña</li>
         </ul>
 
         <p class="small-muted" style="margin-top: 16px;">
-            (2FA desactivado temporalmente)
+            🔒 Sistema 2FA activo para pacientes
         </p>
     </div>
 </div>
@@ -235,5 +303,3 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <?php wp_footer(); ?>
 </body>
 </html>
-
-
