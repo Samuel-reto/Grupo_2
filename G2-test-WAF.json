@@ -1,0 +1,228 @@
+{
+    "Name": "G2-test-WAF",
+    "Id": "fb97cf1b-6298-401b-8b64-e37b6e698624",
+    "ARN": "arn:aws:wafv2:us-east-1:590183727319:regional/webacl/G2-test-WAF/fb97cf1b-6298-401b-8b64-e37b6e698624",
+    "DefaultAction": {
+        "Allow": {}
+    },
+    "Description": "",
+    "Rules": [
+        {
+            "Name": "AllowWpAdminFromTrustedIPs",
+            "Priority": 1,
+            "Statement": {
+                "AndStatement": {
+                    "Statements": [
+                        {
+                            "ByteMatchStatement": {
+                                "SearchString": "/wp-admin/",
+                                "FieldToMatch": {
+                                    "UriPath": {}
+                                },
+                                "TextTransformations": [
+                                    {
+                                        "Priority": 0,
+                                        "Type": "NONE"
+                                    }
+                                ],
+                                "PositionalConstraint": "CONTAINS"
+                            }
+                        },
+                        {
+                            "IPSetReferenceStatement": {
+                                "ARN": "arn:aws:wafv2:us-east-1:590183727319:regional/ipset/G2-test-AdminWhitelist/8c592d59-dd8f-44a6-89fd-679f173664bd"
+                            }
+                        }
+                    ]
+                }
+            },
+            "Action": {
+                "Allow": {}
+            },
+            "VisibilityConfig": {
+                "SampledRequestsEnabled": true,
+                "CloudWatchMetricsEnabled": true,
+                "MetricName": "AllowWpAdminFromTrustedIPs"
+            }
+        },
+        {
+            "Name": "WordPressAppRules",
+            "Priority": 2,
+            "Statement": {
+                "ManagedRuleGroupStatement": {
+                    "VendorName": "AWS",
+                    "Name": "AWSManagedRulesWordPressRuleSet"
+                }
+            },
+            "OverrideAction": {
+                "None": {}
+            },
+            "VisibilityConfig": {
+                "SampledRequestsEnabled": true,
+                "CloudWatchMetricsEnabled": true,
+                "MetricName": "WordPressAppRules"
+            }
+        },
+        {
+            "Name": "SQLiRules",
+            "Priority": 3,
+            "Statement": {
+                "ManagedRuleGroupStatement": {
+                    "VendorName": "AWS",
+                    "Name": "AWSManagedRulesSQLiRuleSet"
+                }
+            },
+            "OverrideAction": {
+                "None": {}
+            },
+            "VisibilityConfig": {
+                "SampledRequestsEnabled": true,
+                "CloudWatchMetricsEnabled": true,
+                "MetricName": "SQLiRules"
+            }
+        },
+        {
+            "Name": "XSSRules",
+            "Priority": 4,
+            "Statement": {
+                "ManagedRuleGroupStatement": {
+                    "VendorName": "AWS",
+                    "Name": "AWSManagedRulesKnownBadInputsRuleSet"
+                }
+            },
+            "OverrideAction": {
+                "None": {}
+            },
+            "VisibilityConfig": {
+                "SampledRequestsEnabled": true,
+                "CloudWatchMetricsEnabled": true,
+                "MetricName": "XSSRules"
+            }
+        },
+        {
+            "Name": "PHPAppRules",
+            "Priority": 5,
+            "Statement": {
+                "ManagedRuleGroupStatement": {
+                    "VendorName": "AWS",
+                    "Name": "AWSManagedRulesPHPRuleSet"
+                }
+            },
+            "OverrideAction": {
+                "None": {}
+            },
+            "VisibilityConfig": {
+                "SampledRequestsEnabled": true,
+                "CloudWatchMetricsEnabled": true,
+                "MetricName": "PHPAppRules"
+            }
+        },
+        {
+            "Name": "RateLimitLogin",
+            "Priority": 6,
+            "Statement": {
+                "RateBasedStatement": {
+                    "Limit": 100,
+                    "EvaluationWindowSec": 300,
+                    "AggregateKeyType": "IP",
+                    "ScopeDownStatement": {
+                        "ByteMatchStatement": {
+                            "SearchString": "wp-login.php",
+                            "FieldToMatch": {
+                                "UriPath": {}
+                            },
+                            "TextTransformations": [
+                                {
+                                    "Priority": 0,
+                                    "Type": "LOWERCASE"
+                                }
+                            ],
+                            "PositionalConstraint": "CONTAINS"
+                        }
+                    }
+                }
+            },
+            "Action": {
+                "Block": {}
+            },
+            "VisibilityConfig": {
+                "SampledRequestsEnabled": true,
+                "CloudWatchMetricsEnabled": true,
+                "MetricName": "RateLimitLogin"
+            }
+        },
+        {
+            "Name": "RateLimitXMLRPC",
+            "Priority": 7,
+            "Statement": {
+                "RateBasedStatement": {
+                    "Limit": 50,
+                    "EvaluationWindowSec": 300,
+                    "AggregateKeyType": "IP",
+                    "ScopeDownStatement": {
+                        "ByteMatchStatement": {
+                            "SearchString": "xmlrpc.php",
+                            "FieldToMatch": {
+                                "UriPath": {}
+                            },
+                            "TextTransformations": [
+                                {
+                                    "Priority": 0,
+                                    "Type": "LOWERCASE"
+                                }
+                            ],
+                            "PositionalConstraint": "CONTAINS"
+                        }
+                    }
+                }
+            },
+            "Action": {
+                "Block": {}
+            },
+            "VisibilityConfig": {
+                "SampledRequestsEnabled": true,
+                "CloudWatchMetricsEnabled": true,
+                "MetricName": "RateLimitXMLRPC"
+            }
+        },
+        {
+            "Name": "BlockWpAdminForEveryoneElse",
+            "Priority": 8,
+            "Statement": {
+                "ByteMatchStatement": {
+                    "SearchString": "/wp-admin/",
+                    "FieldToMatch": {
+                        "UriPath": {}
+                    },
+                    "TextTransformations": [
+                        {
+                            "Priority": 0,
+                            "Type": "NONE"
+                        }
+                    ],
+                    "PositionalConstraint": "CONTAINS"
+                }
+            },
+            "Action": {
+                "Block": {}
+            },
+            "VisibilityConfig": {
+                "SampledRequestsEnabled": true,
+                "CloudWatchMetricsEnabled": true,
+                "MetricName": "BlockWpAdminForEveryoneElse"
+            }
+        }
+    ],
+    "VisibilityConfig": {
+        "SampledRequestsEnabled": true,
+        "CloudWatchMetricsEnabled": true,
+        "MetricName": "WordPressWebACL"
+    },
+    "Capacity": 655,
+    "ManagedByFirewallManager": false,
+    "LabelNamespace": "awswaf:590183727319:webacl:G2-test-WAF:",
+    "RetrofittedByFirewallManager": false,
+    "OnSourceDDoSProtectionConfig": {
+        "ALBLowReputationMode": "ACTIVE_UNDER_DDOS"
+    }
+}
