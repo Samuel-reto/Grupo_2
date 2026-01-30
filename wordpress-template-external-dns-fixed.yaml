@@ -657,7 +657,7 @@ Resources:
           cd /tmp
           wget https://wordpress.org/latest.tar.gz
           tar -xzf latest.tar.gz
-          
+
           echo "=== Copying WordPress files to EFS-mounted /var/www/html ==="
           cp -r wordpress/* /var/www/html/
           rm -f /var/www/html/index.html
@@ -673,6 +673,20 @@ Resources:
           curl -s https://api.wordpress.org/secret-key/1.1/salt/ >> /tmp/wp-keys.txt
           sed -i '/AUTH_KEY/,/NONCE_SALT/d' /var/www/html/wp-config.php
           sed -i "/DB_COLLATE/r /tmp/wp-keys.txt" /var/www/html/wp-config.php
+
+          echo "=== Configuring HTTPS/SSL support ==="
+          # Añadir configuración HTTPS antes de "That's all, stop editing!"
+          sed -i "/That's all, stop editing/i \\
+          \\
+          /* SSL/HTTPS Configuration */ \\
+          if (isset(\$_SERVER['HTTP_X_FORWARDED_PROTO']) && strpos(\$_SERVER['HTTP_X_FORWARDED_PROTO'], 'https') !== false) { \\
+              \$_SERVER['HTTPS'] = 'on'; \\
+          } \\
+          define('FORCE_SSL_ADMIN', true); \\
+          " /var/www/html/wp-config.php
+
+          echo "✓ WordPress configured with HTTPS support"
+
 
           echo "=== Adding S3 configuration ==="
           cat >> /var/www/html/wp-config.php << 'EOFS3'
@@ -692,16 +706,11 @@ Resources:
             echo "✗ WARNING: Repository not cloned"
           fi
 
-          echo "=== Creating Health2You database ==="
-          mysql -h ${RDSInstance.Endpoint.Address} -u admin -p${DBPassword} << EOSQL
-          CREATE DATABASE IF NOT EXISTS health2you CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-          SHOW DATABASES;
-          EOSQL
-
-          if [ -f "/var/www/html/wp-content/themes/health2you/health2you.sql" ]; then
-            echo "=== Importing Health2You database schema ==="
-            mysql -h ${RDSInstance.Endpoint.Address} -u admin -p${DBPassword} health2you < /var/www/html/wp-content/themes/health2you/health2you.sql
-            echo "✓ Database schema imported successfully"
+          # Importar directamente en la base de datos wordpress
+          if [ -f "/var/www/html/wp-content/themes/health2you/citas_medicas_MYSQL.sql" ]; then
+            echo "=== Importing Health2You tables into wordpress database ==="
+            mysql -h ${RDSInstance.Endpoint.Address} -u admin -p${DBPassword} wordpress < /var/www/html/wp-content/themes/health2you/citas_medicas_MYSQL.sql
+            echo "✓ Tables imported successfully into wordpress database"
           else
             echo "⚠ SQL file not found, skipping database import"
           fi
@@ -709,8 +718,11 @@ Resources:
           if [ -f "/var/www/html/wp-content/themes/health2you/config.php" ]; then
             echo "=== Updating Health2You config.php with RDS credentials ==="
             sed -i "s/localhost/${RDSInstance.Endpoint.Address}/" /var/www/html/wp-content/themes/health2you/config.php
+            # También actualizar el nombre de la base de datos si es necesario
+            sed -i "s/health2you/wordpress/g" /var/www/html/wp-content/themes/health2you/config.php
             echo "✓ Config.php updated"
           fi
+
 
           echo "=== Setting proper permissions for www-data ==="
           chown -R www-data:www-data /var/www/html
