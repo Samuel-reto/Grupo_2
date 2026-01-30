@@ -48,14 +48,14 @@ $paciente_nombre = $_SESSION['h2y_paciente_nombre'];
 $success_msg = "";
 if (isset($_GET['success'])) {
     switch ($_GET['success']) {
-        case 'nueva': 
-            $success_msg = "✅ Cita reservada correctamente."; 
+        case 'nueva':
+            $success_msg = "✅ Cita reservada correctamente.";
             break;
-        case 'modificada': 
-            $success_msg = "✅ Cita modificada correctamente."; 
+        case 'modificada':
+            $success_msg = "✅ Cita modificada correctamente.";
             break;
-        case 'cancelada': 
-            $success_msg = "✅ Cita cancelada correctamente."; 
+        case 'cancelada':
+            $success_msg = "✅ Cita cancelada correctamente.";
             break;
     }
 }
@@ -230,3 +230,4 @@ $citas_pasadas = $wpdb->get_results($wpdb->prepare("
 <?php wp_footer(); ?>
 </body>
 </html>
+
