@@ -51,7 +51,7 @@ function h2y_es_dia_valido($fecha) {
 }
 
 function h2y_get_franjas($wpdb, $medico_id, $fecha) {
-    // Franjas de tu nueva_cita.php original (20 min por cita) [file:95]
+    // Franjas de tu nueva_cita.php original (20 min por cita)
     $franjas = [
         '08:30','08:50','09:10','09:30','09:50','10:10','10:30','10:50',
         '11:10','11:30','11:50','12:10','12:30','12:50','13:10',
@@ -129,7 +129,7 @@ if (isset($_GET['h2y_api']) && $_GET['h2y_api'] === '1') {
 
     if ($accion === 'buscar_huecos') {
         $fecha = sanitize_text_field($data['fecha'] ?? '');
-        if (!$fecha || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $fecha)) {
+        if (!$fecha || !preg_match('/^\\d{4}-\\d{2}-\\d{2}$/', $fecha)) {
             echo json_encode(['status' => 'error', 'mensaje' => 'Fecha inválida. Usa AAAA-MM-DD.']);
             exit;
         }
@@ -159,11 +159,11 @@ if (isset($_GET['h2y_api']) && $_GET['h2y_api'] === '1') {
         $hora  = sanitize_text_field($data['hora'] ?? '');
         $motivo = sanitize_text_field($data['motivo'] ?? '');
 
-        if (!$fecha || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $fecha)) {
+        if (!$fecha || !preg_match('/^\\d{4}-\\d{2}-\\d{2}$/', $fecha)) {
             echo json_encode(['status' => 'error', 'mensaje' => 'Fecha inválida.']);
             exit;
         }
-        if (!$hora || !preg_match('/^\d{2}:\d{2}$/', $hora)) {
+        if (!$hora || !preg_match('/^\\d{2}:\\d{2}$/', $hora)) {
             echo json_encode(['status' => 'error', 'mensaje' => 'Hora inválida (HH:MM).']);
             exit;
         }
@@ -242,7 +242,7 @@ if (h2y_es_dia_valido($fecha_sel)) {
     <link rel="stylesheet" href="<?php echo get_stylesheet_directory_uri(); ?>/styles.css">
     <?php wp_head(); ?>
 
-    <!-- Chatbot: estilos basados en botF.html (tooltip + popup + voz) [file:96] -->
+    <!-- Chatbot: estilos basados en botF.html (tooltip + popup + voz) -->
     <style>
         .chat-btn-container{ position: fixed; bottom: 30px; right: 30px; z-index: 1000; display: flex; align-items: center; }
         .chat-btn{
@@ -371,10 +371,16 @@ if (h2y_es_dia_valido($fecha_sel)) {
         <p class="small-muted">
             Médico: <?= htmlspecialchars($medico->especialidad . ' - ' . $medico->nombre . ' ' . $medico->apellidos); ?>
         </p>
+        <!-- BOTÓN CITA URGENTE AÑADIDO AQUÍ -->
+        <a href="<?= esc_url(get_stylesheet_directory_uri() . '/final.html'); ?>" 
+           class="btn-urgente" 
+           style="display:inline-block; margin-top:20px; padding:12px 24px; background:#d32f2f; color:white; text-decoration:none; border-radius:8px; font-weight:600; text-align:center; box-shadow:0 2px 8px rgba(0,0,0,0.15);">
+            🚨 CITA URGENTE
+        </a>
     </div>
 </div>
 
-<!-- UI CHAT (popup + tooltip como botF.html) [file:96] -->
+<!-- UI CHAT (popup + tooltip como botF.html) -->
 <div class="chat-btn-container">
     <div class="chat-tooltip" id="chatTooltip" onclick="toggleChat()">Rellena tus datos por voz o texto aquí</div>
     <button class="chat-btn" onclick="toggleChat()" title="Abrir Chat">🤖</button>
@@ -397,13 +403,13 @@ if (h2y_es_dia_valido($fecha_sel)) {
 
 <script>
 /**
- * Bot con características tipo botF.html: tooltip, popup, voz y TTS. [file:96]
+ * Bot con características tipo botF.html: tooltip, popup, voz y TTS.
  * Diferencia: la disponibilidad y el guardado van contra tu BD real vía AJAX al mismo PHP.
  */
 const usuario = <?= json_encode($paciente_nombre); ?>;
 const apiUrl = window.location.pathname + '?h2y_api=1';
 
-// VOZ (SpeechRecognition) + TTS (speechSynthesis) como botF.html [file:96]
+// VOZ (SpeechRecognition) + TTS (speechSynthesis) como botF.html
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 let reconocimiento = null;
 
@@ -503,7 +509,7 @@ async function api(datos) {
 function pad2(n){ return String(n).padStart(2,'0'); }
 function normalizarHora(h) {
     let x = String(h).trim().replace(':','');
-    if (!/^\d{3,4}$/.test(x)) return null;
+    if (!/^\\d{3,4}$/.test(x)) return null;
     if (x.length === 3) x = '0' + x;
     return x.slice(0,2) + ':' + x.slice(2,4);
 }
@@ -525,7 +531,7 @@ function sendMessage() {
     setTimeout(() => cerebroBot(texto), 450);
 }
 
-// “CEREBRO” con comportamiento tipo botF.html (urgencia, disponibilidad, flujo normal) [file:96]
+// “CEREBRO” con comportamiento tipo botF.html (urgencia, disponibilidad, flujo normal)
 async function cerebroBot(texto) {
     const txt = texto.toLowerCase();
 
@@ -535,7 +541,7 @@ async function cerebroBot(texto) {
         return;
     }
 
-    // 1) Interceptor urgencia: "lo antes posible" (salta mes) [file:96]
+    // 1) Interceptor urgencia: "lo antes posible" (salta mes)
     if (txt.includes('antes posible') || txt.includes('pronto') || txt.includes('cercano') || txt.includes('urgente')) {
         botTalk('He entendido urgencia. Buscando el primer hueco disponible...');
         const r = await api({accion:'buscar_urgente'});
@@ -553,17 +559,15 @@ async function cerebroBot(texto) {
             cita.hora = hora;
 
             botTalk(`He encontrado hueco y lo más pronto es el <strong>${day}</strong> de <strong>${monthName}</strong> a las <strong>${hora}</strong>.<br>Te lo reservo? Dime el motivo si te vale, o di No.`);
-            paso = 3; // pedimos motivo directamente (como botF: urgencia salta preguntas) [file:96]
+            paso = 3; // pedimos motivo directamente
         } else {
             botTalk('Lo siento, no encuentro huecos próximos.');
         }
         return;
     }
 
-    // 2) Interceptor disponibilidad ("libre/disponible") [file:96]
+    // 2) Interceptor disponibilidad ("libre/disponible")
     if (txt.includes('libre') || txt.includes('disponible')) {
-        // Para mantener característica de botF (mes concreto), usamos el mes que el usuario diga si ya lo dijo,
-        // y si no, usamos el mes actual:
         const now = new Date();
         const year = now.getFullYear();
         const month = (cita.mes === 'febrero') ? 2 : (now.getMonth()+1);
@@ -581,11 +585,10 @@ async function cerebroBot(texto) {
         return;
     }
 
-    // 3) Flujo normal tipo botF: Mes -> Día -> Hora -> Motivo -> Confirmación [file:96]
+    // 3) Flujo normal tipo botF: Mes -> Día -> Hora -> Motivo -> Confirmación
     switch (paso) {
         case 0: { // MES
             if (txt.includes('febrero') || txt.includes('enero') || txt.includes('marzo') || txt.includes('abril') || txt.includes('mayo') || txt.includes('junio') || txt.includes('julio') || txt.includes('agosto') || txt.includes('septiembre') || txt.includes('octubre') || txt.includes('noviembre') || txt.includes('diciembre')) {
-                // Cogemos el nombre de mes que aparezca
                 const meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
                 const elegido = meses.find(m => txt.includes(m));
                 cita.mes = elegido;
@@ -599,7 +602,7 @@ async function cerebroBot(texto) {
         }
 
         case 1: { // DÍA
-            const m = txt.match(/\d{1,2}/);
+            const m = txt.match(/\\d{1,2}/);
             if (!m) { botTalk('Necesito el número del día, ej 10.'); return; }
 
             const dia = parseInt(m[0], 10);
@@ -627,9 +630,8 @@ async function cerebroBot(texto) {
         }
 
         case 2: { // HORA
-            // Aceptar "1000" o "10:00"
             let hora = null;
-            const mm = txt.match(/\d{1,2}:?\d{2}/);
+            const mm = txt.match(/\\d{1,2}:?\\d{2}/);
             if (mm) hora = normalizarHora(mm[0]);
 
             if (!hora) { botTalk('Dime una hora válida, ej 09:30 o 0930.'); return; }
@@ -660,7 +662,6 @@ async function cerebroBot(texto) {
 
         case 4: { // CONFIRMACIÓN
             if (txt.includes('sí') || txt === 'si' || txt.includes('ok') || txt.includes('claro') || txt.includes('vale')) {
-                // Convertir mes/día a fecha real y guardar en BD
                 const meses = {enero:1,febrero:2,marzo:3,abril:4,mayo:5,junio:6,julio:7,agosto:8,septiembre:9,octubre:10,noviembre:11,diciembre:12};
                 const monthNum = meses[cita.mes] || (new Date().getMonth()+1);
                 const year = new Date().getFullYear();
@@ -697,20 +698,18 @@ function setHora(h){
     document.getElementById('chatInput').value = h;
     sendMessage();
 }
-// Fix micro (como botF.html): pide permiso explícito [file:96]
+
 function activarVoz() {
     if (!reconocimiento) {
         botTalk('Tu navegador no soporta micrófono.');
         return;
     }
 
-    // 1) Pide permiso explícito (Chrome lo requiere)
     if (!('webkitSpeechRecognition' in window)) {
         botTalk('Micro no soportado. Usa Chrome.');
         return;
     }
 
-    // 2) Reinicia con permiso
     reconocimiento = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
     reconocimiento.lang = 'es-ES';
     reconocimiento.interimResults = false;
@@ -739,7 +738,6 @@ function activarVoz() {
 
     reconocimiento.start();
 }
-
 </script>
 
 <?php wp_footer(); ?>
