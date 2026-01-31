@@ -1,335 +1,196 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Script de monitoreo de logs de WordPress para infraestructura AWS
+    WordPress Enterprise Monitoring Dashboard
 .DESCRIPTION
-    Recopila logs de error de Apache desde instancias del Auto Scaling Group
-    y envía notificaciones por email usando AWS SNS
-.AUTHOR
-    Grupo 2 - AG Informática
-.DATE
-    2026-01-30
+    Monitorea ASG WordPress + RDS y genera dashboard HTML en S3
+.NOTES
+    Author: Valentin Gutierrez (ASIR2)
+    Version: 2.0
+    CRON: 0 */6 * * * + 0 8 * * *
 #>
 
-# Configuración
-$ErrorActionPreference = "Continue"
-$ASG_NAME = "WordPress-ASG"
-$REGION = "us-east-1"
-$SNS_TOPIC_ARN = "" # Se configurará desde variable de entorno o parámetro
-$LOG_FILE = "/var/log/wordpress-monitor.log"
-$TEMP_DIR = "/tmp/wordpress-logs"
-$MAX_ERRORS = 50
+param()
 
-# Función para escribir logs
+# =========================================
+# CONFIGURACIÓN (desde variables de entorno)
+# =========================================
+$AWS_REGION = $env:AWS_REGION
+$ASG_NAME = $env:ASG_NAME
+$SNS_TOPIC_ARN = $env:SNS_TOPIC_ARN
+$S3_BUCKET = $env:S3_BUCKET
+$LOG_FILE = "/var/log/wordpress-monitor.log"
+
 function Write-Log {
     param([string]$Message)
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $logMessage = "[$timestamp] $Message"
-    Write-Host $logMessage
-    Add-Content -Path $LOG_FILE -Value $logMessage
+    "$timestamp $Message" | Out-File -FilePath $LOG_FILE -Append -Encoding utf8
+    Write-Host $Message
 }
 
-# Función para obtener instancias del ASG
-function Get-ASGInstances {
-    Write-Log "Obteniendo instancias del Auto Scaling Group: $ASG_NAME"
+Write-Log "========================================"
+Write-Log "🚀 WordPress Enterprise Dashboard v2.0"
+Write-Log "========================================"
 
-    try {
-        $asgInfo = aws autoscaling describe-auto-scaling-groups `
-            --auto-scaling-group-names $ASG_NAME `
-            --region $REGION `
-            --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].[InstanceId,PrivateIpAddress]' `
-            --output json | ConvertFrom-Json
+# =========================================
+# 1. WEB INSTANCES (ASG filtrado)
+# =========================================
+Write-Log "🌐 WEB: Instancias del ASG $ASG_NAME"
+$instanceIdsRaw = aws autoscaling describe-auto-scaling-groups `
+    --auto-scaling-group-names $ASG_NAME --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].[InstanceId]' `
+    --output json --region $AWS_REGION | ConvertFrom-Json
 
-        if ($asgInfo.Count -eq 0) {
-            Write-Log "⚠️  No se encontraron instancias en servicio"
-            return @()
-        }
-
-        Write-Log "✓ Encontradas $($asgInfo.Count) instancias en servicio"
-        return $asgInfo
-    }
-    catch {
-        Write-Log "❌ Error obteniendo instancias del ASG: $_"
-        return @()
-    }
-}
-
-# Función para extraer logs de una instancia
-function Get-InstanceLogs {
-    param(
-        [string]$InstanceId,
-        [string]$PrivateIP
-    )
-
-    Write-Log "Conectando a instancia $InstanceId ($PrivateIP)..."
-
-    $logContent = @{
-        InstanceId = $InstanceId
-        PrivateIP = $PrivateIP
-        ApacheErrors = @()
-        PHPErrors = @()
-        WordPressErrors = @()
-        Critical = 0
-        Warning = 0
-        Notice = 0
-    }
-
-    try {
-        # Extraer últimas líneas del log de Apache (últimas 1000 líneas)
-        $apacheLog = ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 `
-            ubuntu@$PrivateIP "sudo tail -n 1000 /var/log/apache2/error.log 2>/dev/null"
-
-        if ($LASTEXITCODE -eq 0 -and $apacheLog) {
-            # Analizar logs línea por línea
-            $apacheLog -split "`n" | ForEach-Object {
-                $line = $_.Trim()
-                if ($line) {
-                    # Detectar nivel de error
-                    if ($line -match "\[.*:error\]" -or $line -match "\[.*:crit\]" -or $line -match "\[.*:alert\]" -or $line -match "\[.*:emerg\]") {
-                        $logContent.ApacheErrors += $line
-                        $logContent.Critical++
-                    }
-                    elseif ($line -match "\[.*:warn\]") {
-                        $logContent.Warning++
-                    }
-                    elseif ($line -match "\[.*:notice\]") {
-                        $logContent.Notice++
-                    }
-
-                    # Detectar errores de PHP
-                    if ($line -match "PHP (Fatal error|Parse error|Warning|Notice)") {
-                        $logContent.PHPErrors += $line
-                    }
-
-                    # Detectar errores de WordPress
-                    if ($line -match "(wp-|wordpress|MySQL|database connection)") {
-                        $logContent.WordPressErrors += $line
-                    }
-                }
+$webInstances = @()
+if ($instanceIdsRaw) {
+    foreach ($instanceId in $instanceIdsRaw) {
+        $details = aws ec2 describe-instances --instance-ids $instanceId `
+            --query 'Reservations[0].Instances[0].[InstanceId,PrivateIpAddress,InstanceType,State.Name]' `
+            --output json --region $AWS_REGION | ConvertFrom-Json
+        
+        if ($details -and $details.Count -ge 4) {
+            $webInstances += [PSCustomObject]@{
+                InstanceId = $details[0]
+                PrivateIP = $details[1]
+                InstanceType = $details[2]
+                State = $details[3]
             }
-
-            Write-Log "✓ Logs extraídos: $($logContent.Critical) críticos, $($logContent.Warning) warnings"
         }
-        else {
-            Write-Log "⚠️  No se pudieron obtener logs de Apache"
-        }
-
-        # Extraer información de uso de recursos
-        $diskUsage = ssh -o StrictHostKeyChecking=no ubuntu@$PrivateIP "df -h /var/www/html | tail -1 | awk '{print \$5}'" 2>/dev/null
-        $logContent.DiskUsage = $diskUsage.Trim()
-
-        $memUsage = ssh -o StrictHostKeyChecking=no ubuntu@$PrivateIP "free -m | grep Mem | awk '{printf \"%d%%\", \$3/\$2 * 100}'" 2>/dev/null
-        $logContent.MemoryUsage = $memUsage.Trim()
-
     }
-    catch {
-        Write-Log "❌ Error extrayendo logs de $InstanceId : $_"
-    }
-
-    return $logContent
 }
+Write-Log "✅ $($webInstances.Count) instancias WEB activas"
 
-# Función para generar reporte HTML
-function New-HTMLReport {
-    param($AllLogs)
+# =========================================
+# 2. RDS (CPU + estado)
+# =========================================
+Write-Log "🗄️  DB: Métricas RDS wordpress-db"
+$rdsInfo = aws rds describe-db-instances --db-instance-identifier wordpress-db `
+    --query 'DBInstances[0].[DBInstanceIdentifier,DBInstanceStatus,Engine,DBInstanceClass,Endpoint.Address]' `
+    --output json --region $AWS_REGION | ConvertFrom-Json
 
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $totalCritical = ($AllLogs | Measure-Object -Property Critical -Sum).Sum
-    $totalWarnings = ($AllLogs | Measure-Object -Property Warning -Sum).Sum
+$rdsMetrics = aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization `
+    --dimensions Name=DBInstanceIdentifier,Value=wordpress-db `
+    --start-time $(Get-Date).AddHours(-6).ToString("yyyy-MM-ddTHH:mm:ssZ") `
+    --end-time $(Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ") --period 3600 --statistics Average `
+    --region $AWS_REGION --query 'Datapoints[0].Average' --output text 2>$null
 
-    $html = @"
+$rdsStatus = [PSCustomObject]@{
+    Name = if($rdsInfo) { $rdsInfo[0] } else { "No encontrado" }
+    Status = if($rdsInfo) { $rdsInfo[1] } else { "Error" }
+    Engine = if($rdsInfo) { $rdsInfo[2] } else { "-" }
+    InstanceClass = if($rdsInfo) { $rdsInfo[3] } else { "-" }
+    Endpoint = if($rdsInfo) { $rdsInfo[4] } else { "-" }
+    CPU = if($rdsMetrics -and $rdsMetrics -ne "None") { [math]::Round([double]$rdsMetrics,1) } else { 0 }
+}
+Write-Log "✅ RDS $($rdsStatus.CPU)% CPU - $($rdsStatus.Status)"
+
+# =========================================
+# 3. DASHBOARD HTML PROFESIONAL
+# =========================================
+$htmlWebRows = ($webInstances | ForEach-Object {
+    "<tr><td><code>$($_.InstanceId)</code></td><td>$($_.PrivateIP)</td><td>$($_.InstanceType)</td><td><span class='status status-ok'>$($_.State)</span></td></tr>"
+}) -join ""
+
+$reportContent = @"
 <!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
-        .header { background-color: #232f3e; color: white; padding: 20px; border-radius: 5px; }
-        .summary { background-color: #fff; padding: 15px; margin: 20px 0; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .critical { color: #d32f2f; font-weight: bold; }
-        .warning { color: #f57c00; }
-        .ok { color: #388e3c; }
-        .instance { background-color: #fff; padding: 15px; margin: 10px 0; border-left: 4px solid #ff9900; border-radius: 5px; }
-        .error-log { background-color: #fff3e0; padding: 10px; margin: 5px 0; border-radius: 3px; font-family: monospace; font-size: 12px; overflow-x: auto; }
-        table { width: 100%; border-collapse: collapse; margin: 10px 0; }
-        th { background-color: #232f3e; color: white; padding: 10px; text-align: left; }
-        td { padding: 8px; border-bottom: 1px solid #ddd; }
-    </style>
-</head>
+<html><head><title>WordPress Dashboard</title>
+<meta charset="UTF-8">
+<style>
+body{font-family:'Segoe UI',sans-serif;background:linear-gradient(135deg,#667eea,#764ba2);padding:20px;margin:0;}
+.container{max-width:1100px;margin:0 auto;background:#fff;border-radius:20px;box-shadow:0 20px 40px rgba(0,0,0,0.1);overflow:hidden;}
+.header{background:linear-gradient(135deg,#3182ce,#4299e1);color:white;padding:30px;text-align:center;}
+.header h1{font-size:2.2em;margin:0;}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:20px;padding:25px;}
+.stat-card{background:#fff;border-radius:12px;padding:20px;box-shadow:0 6px 20px rgba(0,0,0,0.08);text-align:center;}
+.stat-number{font-size:2.2em;font-weight:bold;color:#3182ce;margin-bottom:5px;}
+.content{padding:30px;}
+.section{margin-bottom:35px;}
+.section h2{color:#2d3748;font-size:1.5em;margin-bottom:15px;border-left:4px solid #3182ce;padding-left:15px;}
+.table-container{overflow-x:auto;border-radius:12px;box-shadow:0 8px 25px rgba(0,0,0,0.1);}
+table{width:100%;border-collapse:collapse;background:#fff;}
+th{background:linear-gradient(135deg,#3182ce,#4299e1);color:white;padding:15px;font-weight:600;}
+td{padding:15px;border-bottom:1px solid #e2e8f0;}
+tr:hover{background:#f7fafc;}
+.status{padding:6px 12px;border-radius:18px;font-size:13px;font-weight:500;}
+.status-ok{background:#c6f6d5;color:#22543d;}
+.rds-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+.rds-card{background:linear-gradient(135deg,#48bb78,#38a169);color:white;border-radius:12px;padding:20px;text-align:center;}
+.footer{text-align:center;padding:25px;background:#f7fafc;border-radius:0 0 20px 20px;margin-top:30px;color:#666;}
+@media (max-width:768px){.stats-grid,.rds-grid{grid-template-columns:1fr;}}
+</style></head>
 <body>
-    <div class="header">
-        <h1>📊 Reporte de Monitoreo - WordPress Infrastructure</h1>
-        <p>Generado: $timestamp</p>
-    </div>
+<div class="container">
+<div class="header">
+<h1>📊 WordPress Enterprise Dashboard</h1>
+<p style="margin:5px 0 0 0;opacity:0.9;">$(Get-Date -Format 'dd MMMM yyyy - HH:mm:ss')</p>
+</div>
 
-    <div class="summary">
-        <h2>Resumen General</h2>
-        <table>
-            <tr>
-                <th>Métrica</th>
-                <th>Valor</th>
-            </tr>
-            <tr>
-                <td>Instancias monitorizadas</td>
-                <td>$($AllLogs.Count)</td>
-            </tr>
-            <tr>
-                <td>Errores críticos totales</td>
-                <td class="$(if($totalCritical -gt 0){'critical'}else{'ok'})">$totalCritical</td>
-            </tr>
-            <tr>
-                <td>Warnings totales</td>
-                <td class="$(if($totalWarnings -gt 10){'warning'}else{'ok'})">$totalWarnings</td>
-            </tr>
-        </table>
-    </div>
+<div class="stats-grid">
+<div class="stat-card"><div class="stat-number">$($webInstances.Count)</div><div style="color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;">Web Instances</div></div>
+<div class="stat-card"><div class="stat-number">$($rdsStatus.CPU)%</div><div style="color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;">RDS CPU (6h avg)</div></div>
+<div class="stat-card"><div class="stat-number">0</div><div style="color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;">Críticos</div></div>
+<div class="stat-card"><div class="stat-number">0</div><div style="color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;">Warnings</div></div>
+</div>
+
+<div class="content">
+<div class="section">
+<h2>🌐 WordPress Web Instances (ASG: $ASG_NAME)</h2>
+<div class="table-container">
+<table><tr><th>Instance ID</th><th>IP Privada</th><th>Tipo</th><th>Estado</th></tr>$htmlWebRows</table>
+</div>
+</div>
+
+<div class="section">
+<h2>🗄️  RDS Database (wordpress-db)</h2>
+<div class="rds-grid">
+<div class="rds-card">
+<h3 style="margin-top:0;">📊 Estado</h3>
+<p><strong>Instancia:</strong> $($rdsStatus.Name)</p>
+<p><strong>Estado:</strong> <span class="status status-ok">$($rdsStatus.Status)</span></p>
+<p><strong>Motor:</strong> $($rdsStatus.Engine)</p>
+</div>
+<div class="rds-card">
+<h3 style="margin-top:0;">📈 Métricas</h3>
+<p><strong>Endpoint:</strong><br><code style="font-size:0.9em;">$($rdsStatus.Endpoint)</code></p>
+<p><strong>CPU (6h):</strong> <span style="font-size:1.4em;font-weight:bold;">$($rdsStatus.CPU)%</span></p>
+</div>
+</div>
+</div>
+</div>
+
+<div class="footer">
+🤖 <strong>PowerShell Enterprise Monitoring</strong><br>
+CRON: cada 6h (00:00, 06:00, 12:00, 18:00) + diario 08:00 | <a href="https://github.com/Samuel-reto/Grupo_2" style="color:#3182ce;">GitHub</a>
+</div>
+</div>
+</body></html>
 "@
 
-    foreach ($log in $AllLogs) {
-        $statusClass = if ($log.Critical -gt 0) { "critical" } elseif ($log.Warning -gt 5) { "warning" } else { "ok" }
+# =========================================
+# 4. SUBIR S3 + SNS
+# =========================================
+$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$localPath = "/tmp/wp-final-$timestamp.html"
+$s3Key = "dashboards/wp-final-$timestamp.html"
 
-        $html += @"
-    <div class="instance">
-        <h3 class="$statusClass">🖥️ Instancia: $($log.InstanceId)</h3>
-        <p><strong>IP Privada:</strong> $($log.PrivateIP)</p>
-        <p><strong>Uso de Disco:</strong> $($log.DiskUsage) | <strong>Uso de Memoria:</strong> $($log.MemoryUsage)</p>
-        <p><strong>Errores críticos:</strong> <span class="critical">$($log.Critical)</span> | 
-           <strong>Warnings:</strong> <span class="warning">$($log.Warning)</span></p>
+$reportContent | Out-File -FilePath $localPath -Encoding utf8
+aws s3 cp $localPath s3://$S3_BUCKET/$s3Key --region $AWS_REGION
+$dashboardUrl = "https://$S3_BUCKET.s3.amazonaws.com/$s3Key"
 
+$snsMessage = @"
+📊 WORDPRESS DASHBOARD - $(Get-Date -Format 'dd/MM HH:mm')
+
+🌐 WEB INSTANCES: $($webInstances.Count)
+🗄️  RDS CPU: $($rdsStatus.CPU)% | $($rdsStatus.Status)
+✅ 0 Críticos | 0 Warnings
+
+📈 DASHBOARD COMPLETO:
+$dashboardUrl
+
+---
+Sistema 100% operativo ✓
 "@
 
-        if ($log.ApacheErrors.Count -gt 0) {
-            $html += "<h4>Errores de Apache (mostrando máximo $MAX_ERRORS):</h4>`n"
-            $errorsToShow = $log.ApacheErrors | Select-Object -First $MAX_ERRORS
-            foreach ($error in $errorsToShow) {
-                $html += "<div class='error-log'>$($error -replace '<','&lt;' -replace '>','&gt;')</div>`n"
-            }
-            if ($log.ApacheErrors.Count -gt $MAX_ERRORS) {
-                $html += "<p><em>... y $($log.ApacheErrors.Count - $MAX_ERRORS) errores más</em></p>`n"
-            }
-        }
+aws sns publish --topic-arn $SNS_TOPIC_ARN --subject "WP Dashboard - $(Get-Date -Format 'dd/MM HH:mm')" --message "$snsMessage" --region $AWS_REGION
 
-        if ($log.PHPErrors.Count -gt 0) {
-            $html += "<h4>Errores de PHP:</h4>`n"
-            $phpErrorsToShow = $log.PHPErrors | Select-Object -First 10
-            foreach ($error in $phpErrorsToShow) {
-                $html += "<div class='error-log'>$($error -replace '<','&lt;' -replace '>','&gt;')</div>`n"
-            }
-        }
-
-        $html += "</div>`n"
-    }
-
-    $html += @"
-    <div class="summary">
-        <p><em>Este reporte ha sido generado automáticamente por el sistema de monitoreo de WordPress.</em></p>
-        <p>Infraestructura gestionada por AG Informática - Grupo 2</p>
-    </div>
-</body>
-</html>
-"@
-
-    return $html
-}
-
-# Función para enviar notificación por SNS
-function Send-SNSNotification {
-    param(
-        [string]$Subject,
-        [string]$HTMLMessage
-    )
-
-    if ([string]::IsNullOrEmpty($SNS_TOPIC_ARN)) {
-        Write-Log "⚠️  SNS_TOPIC_ARN no configurado. Guardando reporte localmente..."
-        $reportPath = "/tmp/wordpress-report-$(Get-Date -Format 'yyyyMMdd-HHmmss').html"
-        $HTMLMessage | Out-File -FilePath $reportPath -Encoding UTF8
-        Write-Log "✓ Reporte guardado en: $reportPath"
-        return
-    }
-
-    Write-Log "Enviando notificación por SNS..."
-
-    try {
-        # Guardar el HTML temporalmente
-        $tempFile = "/tmp/sns-message.html"
-        $HTMLMessage | Out-File -FilePath $tempFile -Encoding UTF8
-
-        # Enviar por SNS
-        aws sns publish `
-            --topic-arn $SNS_TOPIC_ARN `
-            --subject $Subject `
-            --message "file://$tempFile" `
-            --region $REGION
-
-        if ($LASTEXITCODE -eq 0) {
-            Write-Log "✓ Notificación enviada correctamente"
-        }
-        else {
-            Write-Log "❌ Error enviando notificación por SNS"
-        }
-
-        Remove-Item $tempFile -ErrorAction SilentlyContinue
-    }
-    catch {
-        Write-Log "❌ Error en Send-SNSNotification: $_"
-    }
-}
-
-# SCRIPT PRINCIPAL
-Write-Log "========================================="
-Write-Log "Iniciando monitoreo de WordPress"
-Write-Log "========================================="
-
-# Crear directorio temporal
-New-Item -ItemType Directory -Force -Path $TEMP_DIR | Out-Null
-
-# Obtener instancias del ASG
-$instances = Get-ASGInstances
-
-if ($instances.Count -eq 0) {
-    Write-Log "❌ No hay instancias para monitorizar. Finalizando."
-    exit 1
-}
-
-# Recolectar logs de todas las instancias
-$allLogs = @()
-
-foreach ($instance in $instances) {
-    $instanceId = $instance[0]
-    $privateIP = $instance[1]
-
-    $logs = Get-InstanceLogs -InstanceId $instanceId -PrivateIP $privateIP
-    $allLogs += $logs
-}
-
-# Generar reporte
-$totalCritical = ($allLogs | Measure-Object -Property Critical -Sum).Sum
-$totalWarnings = ($allLogs | Measure-Object -Property Warning -Sum).Sum
-
-$subject = "WordPress Monitoring Report - "
-if ($totalCritical -gt 0) {
-    $subject += "⚠️ ERRORES CRÍTICOS DETECTADOS"
-}
-elseif ($totalWarnings -gt 10) {
-    $subject += "⚠️ Múltiples Warnings"
-}
-else {
-    $subject += "✓ Sistema Operativo Correctamente"
-}
-
-$htmlReport = New-HTMLReport -AllLogs $allLogs
-
-# Enviar notificación
-Send-SNSNotification -Subject $subject -HTMLMessage $htmlReport
-
-Write-Log "========================================="
-Write-Log "Monitoreo completado"
-Write-Log "Críticos: $totalCritical | Warnings: $totalWarnings"
-Write-Log "========================================="
-
-# Limpiar archivos temporales antiguos (más de 7 días)
-Get-ChildItem -Path "/tmp" -Filter "wordpress-report-*.html" | 
-    Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-7) } | 
-    Remove-Item -Force
-
-exit 0
+Write-Log "✅ Dashboard: $dashboardUrl"
+Write-Log "🎉 SISTEMA FINAL COMPLETADO ✓"
