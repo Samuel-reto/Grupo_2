@@ -22,7 +22,7 @@ $S3_BUCKET = $env:S3_BUCKET
 $LOG_FILE = "/var/log/wordpress-monitor.log"
 
 function Write-Log {
-    param([string]$Message)
+    param([string]$Action,[string]$Result)
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     "$timestamp $Message" | Out-File -FilePath $LOG_FILE -Append -Encoding utf8
     Write-Host $Message
