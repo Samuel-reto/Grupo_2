@@ -3,17 +3,17 @@
 .SYNOPSIS
     WordPress Enterprise Monitoring Dashboard
 .DESCRIPTION
-    Monitorea ASG WordPress + RDS y genera dashboard HTML en S3 con alertas visuales
+    Monitorea ASG WordPress + RDS y genera dashboard HTML en S3
 .NOTES
     Author: Valentin Gutierrez (ASIR2)
-    Version: 2.3
+    Version: 2.0
     CRON: 0 */6 * * * + 0 8 * * *
 #>
 
 param()
 
 # =========================================
-# CONFIGURACIÓN
+# CONFIGURACIÓN (desde variables de entorno)
 # =========================================
 $AWS_REGION = $env:AWS_REGION
 $ASG_NAME = $env:ASG_NAME
@@ -24,17 +24,18 @@ $LOG_FILE = "/var/log/wordpress-monitor.log"
 function Write-Log {
     param([string]$Action,[string]$Result)
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $logMessage = "[$timestamp] - [$Action] - [$Result]"
-    $logMessage | Out-File -FilePath $LOG_FILE -Append -Encoding utf8
-    Write-Host $logMessage
+    "$timestamp $Message" | Out-File -FilePath $LOG_FILE -Append -Encoding utf8
+    Write-Host $Message
 }
 
-Write-Log "INICIO SCRIPT" "WordPress Enterprise Dashboard v2.3"
+Write-Log "========================================"
+Write-Log "🚀 WordPress Enterprise Dashboard v2.0"
+Write-Log "========================================"
 
 # =========================================
-# 1. WEB INSTANCES (ASG)
+# 1. WEB INSTANCES (ASG filtrado)
 # =========================================
-Write-Log "WEB" "Recuperando instancias del ASG $ASG_NAME"
+Write-Log "🌐 WEB: Instancias del ASG $ASG_NAME"
 $instanceIdsRaw = aws autoscaling describe-auto-scaling-groups `
     --auto-scaling-group-names $ASG_NAME --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].[InstanceId]' `
     --output json --region $AWS_REGION | ConvertFrom-Json
@@ -56,40 +57,21 @@ if ($instanceIdsRaw) {
         }
     }
 }
-Write-Log "WEB" "$($webInstances.Count) instancias activas"
+Write-Log "✅ $($webInstances.Count) instancias WEB activas"
 
 # =========================================
-# 2. RDS (CPU + Memoria + Disco + Alertas)
+# 2. RDS (CPU + estado)
 # =========================================
-Write-Log "RDS" "Obteniendo información y métricas de wordpress-db"
-
+Write-Log "🗄️  DB: Métricas RDS wordpress-db"
 $rdsInfo = aws rds describe-db-instances --db-instance-identifier wordpress-db `
     --query 'DBInstances[0].[DBInstanceIdentifier,DBInstanceStatus,Engine,DBInstanceClass,Endpoint.Address]' `
     --output json --region $AWS_REGION | ConvertFrom-Json
 
-$rdsCpu = aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization `
+$rdsMetrics = aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization `
     --dimensions Name=DBInstanceIdentifier,Value=wordpress-db `
     --start-time $(Get-Date).AddHours(-6).ToString("yyyy-MM-ddTHH:mm:ssZ") `
     --end-time $(Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ") --period 3600 --statistics Average `
     --region $AWS_REGION --query 'Datapoints[0].Average' --output text 2>$null
-
-$rdsMemory = aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name FreeableMemory `
-    --dimensions Name=DBInstanceIdentifier,Value=wordpress-db `
-    --start-time $(Get-Date).AddHours(-6).ToString("yyyy-MM-ddTHH:mm:ssZ") `
-    --end-time $(Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ") --period 3600 --statistics Average `
-    --region $AWS_REGION --query 'Datapoints[0].Average' --output text 2>$null
-
-$rdsDisk = aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name FreeStorageSpace `
-    --dimensions Name=DBInstanceIdentifier,Value=wordpress-db `
-    --start-time $(Get-Date).AddHours(-6).ToString("yyyy-MM-ddTHH:mm:ssZ") `
-    --end-time $(Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ") --period 3600 --statistics Average `
-    --region $AWS_REGION --query 'Datapoints[0].Average' --output text 2>$null
-
-# Evaluación de alertas
-$alerts = @()
-if ($rdsCpu -gt 80) { $alerts += "⚠️ CPU alta: $([math]::Round($rdsCpu,1))%" }
-if ($rdsMemory -lt 200*1024*1024) { $alerts += "⚠️ Memoria baja: $([math]::Round($rdsMemory/1024/1024,1)) MB libre" }
-if ($rdsDisk -lt 10*1024*1024*1024) { $alerts += "⚠️ Disco bajo: $([math]::Round($rdsDisk/1024/1024/1024,1)) GB libre" }
 
 $rdsStatus = [PSCustomObject]@{
     Name = if($rdsInfo) { $rdsInfo[0] } else { "No encontrado" }
@@ -97,16 +79,12 @@ $rdsStatus = [PSCustomObject]@{
     Engine = if($rdsInfo) { $rdsInfo[2] } else { "-" }
     InstanceClass = if($rdsInfo) { $rdsInfo[3] } else { "-" }
     Endpoint = if($rdsInfo) { $rdsInfo[4] } else { "-" }
-    CPU = if($rdsCpu -and $rdsCpu -ne "None") { [math]::Round([double]$rdsCpu,1) } else { 0 }
-    MemoryMB = if($rdsMemory -and $rdsMemory -ne "None") { [math]::Round([double]$rdsMemory/1024/1024,1) } else { 0 }
-    DiskGB = if($rdsDisk -and $rdsDisk -ne "None") { [math]::Round([double]$rdsDisk/1024/1024/1024,1) } else { 0 }
-    Alerts = if($alerts.Count -gt 0) { $alerts -join "; " } else { "✅ Todas las métricas OK" }
+    CPU = if($rdsMetrics -and $rdsMetrics -ne "None") { [math]::Round([double]$rdsMetrics,1) } else { 0 }
 }
-
-Write-Log "RDS" "CPU $($rdsStatus.CPU)% | Memoria $($rdsStatus.MemoryMB)MB | Disco $($rdsStatus.DiskGB)GB | Alertas: $($rdsStatus.Alerts)"
+Write-Log "✅ RDS $($rdsStatus.CPU)% CPU - $($rdsStatus.Status)"
 
 # =========================================
-# 3. DASHBOARD HTML
+# 3. DASHBOARD HTML PROFESIONAL
 # =========================================
 $htmlWebRows = ($webInstances | ForEach-Object {
     "<tr><td><code>$($_.InstanceId)</code></td><td>$($_.PrivateIP)</td><td>$($_.InstanceType)</td><td><span class='status status-ok'>$($_.State)</span></td></tr>"
@@ -115,7 +93,7 @@ $htmlWebRows = ($webInstances | ForEach-Object {
 $reportContent = @"
 <!DOCTYPE html>
 <html><head><title>WordPress Dashboard</title>
-<meta charset='UTF-8'>
+<meta charset="UTF-8">
 <style>
 body{font-family:'Segoe UI',sans-serif;background:linear-gradient(135deg,#667eea,#764ba2);padding:20px;margin:0;}
 .container{max-width:1100px;margin:0 auto;background:#fff;border-radius:20px;box-shadow:0 20px 40px rgba(0,0,0,0.1);overflow:hidden;}
@@ -140,64 +118,48 @@ tr:hover{background:#f7fafc;}
 @media (max-width:768px){.stats-grid,.rds-grid{grid-template-columns:1fr;}}
 </style></head>
 <body>
-<div class='container'>
-<div class='header'>
+<div class="container">
+<div class="header">
 <h1>Health2You ⚕️</h1>
-<p style='margin:5px 0 0 0;opacity:0.9;'>$(Get-Date -Format 'dd MMMM yyyy - HH:mm:ss')</p>
+<p style="margin:5px 0 0 0;opacity:0.9;">$(Get-Date -Format 'dd MMMM yyyy - HH:mm:ss')</p>
 </div>
 
-<div class='stats-grid'>
-<div class='stat-card'><div class='stat-number'>$($webInstances.Count)</div><div style='color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;'>Web Instances</div></div>
-<div class='stat-card'><div class='stat-number'>$($rdsStatus.CPU)%</div><div style='color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;'>RDS CPU (6h avg)</div></div>
-<div class='stat-card'><div class='stat-number'>0</div><div style='color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;'>Críticos</div></div>
-<div class='stat-card'><div class='stat-number'>0</div><div style='color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;'>Warnings</div></div>
+<div class="stats-grid">
+<div class="stat-card"><div class="stat-number">$($webInstances.Count)</div><div style="color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;">Web Instances</div></div>
+<div class="stat-card"><div class="stat-number">$($rdsStatus.CPU)%</div><div style="color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;">RDS CPU (6h avg)</div></div>
+<div class="stat-card"><div class="stat-number">0</div><div style="color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;">Críticos</div></div>
+<div class="stat-card"><div class="stat-number">0</div><div style="color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;">Warnings</div></div>
 </div>
 
-<div class='content'>
-<div class='section'>
+<div class="content">
+<div class="section">
 <h2>🌐 WordPress Web Instances (ASG: $ASG_NAME)</h2>
-<div class='table-container'>
+<div class="table-container">
 <table><tr><th>Instance ID</th><th>IP Privada</th><th>Tipo</th><th>Estado</th></tr>$htmlWebRows</table>
 </div>
 </div>
 
-<div class='section'>
+<div class="section">
 <h2>🗄️  RDS Database (wordpress-db)</h2>
-<div class='rds-grid'>
-<div class='rds-card'>
-<h3 style='margin-top:0;'>📊 Estado</h3>
+<div class="rds-grid">
+<div class="rds-card">
+<h3 style="margin-top:0;">📊 Estado</h3>
 <p><strong>Instancia:</strong> $($rdsStatus.Name)</p>
-<p><strong>Estado:</strong> <span class='status status-ok'>$($rdsStatus.Status)</span></p>
+<p><strong>Estado:</strong> <span class="status status-ok">$($rdsStatus.Status)</span></p>
 <p><strong>Motor:</strong> $($rdsStatus.Engine)</p>
 </div>
-<div class='rds-card'>
-<h3 style='margin-top:0;'>📈 Métricas & Alertas</h3>
-<p><strong>Endpoint:</strong><br><code style='font-size:0.9em;'>$($rdsStatus.Endpoint)</code></p>
-<ul style='list-style:none;padding:0;'>
-<li>CPU: $($rdsStatus.CPU)% 
-    <div style='background:#e2e8f0;border-radius:8px;overflow:hidden;width:100%;height:15px;margin:3px 0;'>
-        <div style='width:$($rdsStatus.CPU)%;background:#3182ce;height:100%;'></div>
-    </div>
-</li>
-<li>Memoria libre: $($rdsStatus.MemoryMB) MB
-    <div style='background:#e2e8f0;border-radius:8px;overflow:hidden;width:100%;height:15px;margin:3px 0;'>
-        <div style='width:$([math]::Round((1 - $rdsStatus.MemoryMB/8192)*100,1))%;background:#48bb78;height:100%;'></div>
-    </div>
-</li>
-<li>Espacio libre en disco: $($rdsStatus.DiskGB) GB
-    <div style='background:#e2e8f0;border-radius:8px;overflow:hidden;width:100%;height:15px;margin:3px 0;'>
-        <div style='width:$([math]::Round((1 - $rdsStatus.DiskGB/100)*100,1))%;background:#f56565;height:100%;'></div>
-    </div>
-</li>
-<li>Alertas: $($rdsStatus.Alerts)</li>
-</ul>
+<div class="rds-card">
+<h3 style="margin-top:0;">📈 Métricas</h3>
+<p><strong>Endpoint:</strong><br><code style="font-size:0.9em;">$($rdsStatus.Endpoint)</code></p>
+<p><strong>CPU (6h):</strong> <span style="font-size:1.4em;font-weight:bold;">$($rdsStatus.CPU)%</span></p>
+</div>
 </div>
 </div>
 </div>
 
-<div class='footer'>
+<div class="footer">
 🤖 <strong>PowerShell Enterprise Monitoring</strong><br>
-CRON: cada 6h (00:00, 06:00, 12:00, 18:00) + diario 08:00 | <a href='https://github.com/Samuel-reto/Grupo_2' style='color:#3182ce;'>GitHub</a>
+CRON: cada 6h (00:00, 06:00, 12:00, 18:00) + diario 08:00 | <a href="https://github.com/Samuel-reto/Grupo_2" style="color:#3182ce;">GitHub</a>
 </div>
 </div>
 </body></html>
@@ -211,18 +173,15 @@ $localPath = "/tmp/wp-final-$timestamp.html"
 $s3Key = "dashboards/wp-final-$timestamp.html"
 
 $reportContent | Out-File -FilePath $localPath -Encoding utf8
-Write-Log "HTML" "Generado localmente en $localPath"
-
 aws s3 cp $localPath s3://$S3_BUCKET/$s3Key --region $AWS_REGION
 $dashboardUrl = "https://$S3_BUCKET.s3.amazonaws.com/$s3Key"
-Write-Log "S3" "Dashboard subido a $dashboardUrl"
 
 $snsMessage = @"
 📊 WORDPRESS DASHBOARD - $(Get-Date -Format 'dd/MM HH:mm')
 
 🌐 WEB INSTANCES: $($webInstances.Count)
-🗄️  RDS CPU: $($rdsStatus.CPU)% | Memoria: $($rdsStatus.MemoryMB) MB | Disco: $($rdsStatus.DiskGB) GB
-Alertas: $($rdsStatus.Alerts)
+🗄️  RDS CPU: $($rdsStatus.CPU)% | $($rdsStatus.Status)
+✅ 0 Críticos | 0 Warnings
 
 📈 DASHBOARD COMPLETO:
 $dashboardUrl
@@ -232,6 +191,6 @@ Sistema 100% operativo ✓
 "@
 
 aws sns publish --topic-arn $SNS_TOPIC_ARN --subject "WP Dashboard - $(Get-Date -Format 'dd/MM HH:mm')" --message "$snsMessage" --region $AWS_REGION
-Write-Log "SNS" "Notificación enviada"
 
-Write-Log "FIN SCRIPT" "SISTEMA FINAL COMPLETADO ✓"
+Write-Log "✅ Dashboard: $dashboardUrl"
+Write-Log "🎉 SISTEMA FINAL COMPLETADO ✓"

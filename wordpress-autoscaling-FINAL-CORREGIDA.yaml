@@ -1,0 +1,1179 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: 'Infraestructura WordPress con Auto Scaling, Lambda Backups, RDS MySQL y ALB - AWS Academy Compatible - CORREGIDA v2'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Configuración de Red y Seguridad"
+        Parameters:
+          - KeyName
+      - Label:
+          default: "Configuración de Base de Datos"
+        Parameters:
+          - DBPassword
+      - Label:
+          default: "Configuración de AMI"
+        Parameters:
+          - LatestAmiId
+          - UseProductionAMI
+          - ProductionAMI
+
+Parameters:
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: vockey
+    Description: Clave SSH para acceso a instancias
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: Contraseña para RDS MySQL (minimo 8 caracteres)
+    Default: WordpressDB2026
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+    Description: AMI Ubuntu 22.04 LTS
+
+  UseProductionAMI:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Cambiar a 'true' cuando tengas una AMI de produccion lista
+
+  ProductionAMI:
+    Type: String
+    Description: AMI ID de WordPress configurado (dejar vacio hasta tener la AMI de produccion)
+    Default: ""
+
+Conditions:
+  UseProductionAMICondition: !Equals [!Ref UseProductionAMI, "true"]
+
+Resources:
+  # ============================================
+  # CLOUDWATCH LOG GROUP
+  # ============================================
+  EC2LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ec2/wordpress-instances
+      RetentionInDays: 7
+
+  # ============================================
+  # VPC Y REDES
+  # ============================================
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: WordPress-VPC
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: WordPress-IGW
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Subnets Públicas
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public-Subnet-1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public-Subnet-2
+
+  PublicSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [2, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public-Subnet-3
+
+  # Subnets Privadas
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.4.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: Private-Subnet-1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.5.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: Private-Subnet-2
+
+  PrivateSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.6.0/24
+      AvailabilityZone: !Select [2, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: Private-Subnet-3
+
+  # NAT Gateway
+  NATGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: NAT-Gateway-EIP
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: WordPress-NAT-Gateway
+
+  # Route Tables
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Public-Route-Table
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet3
+      RouteTableId: !Ref PublicRouteTable
+
+  # Route Table PRIVADA
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Private-Route-Table
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    DependsOn: NATGateway
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet3
+      RouteTableId: !Ref PrivateRouteTable
+
+  # ============================================
+  # SECURITY GROUPS
+  # ============================================
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: Bastion-SG
+      GroupDescription: Security group for Bastion Host
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH from anywhere
+      Tags:
+        - Key: Name
+          Value: Bastion-SG
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: ALB-SG
+      GroupDescription: Security group for Application Load Balancer
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP from Internet
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS from Internet
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+      Tags:
+        - Key: Name
+          Value: ALB-SG
+
+  WebServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: WebServer-SG
+      GroupDescription: Security group for WordPress web servers
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: HTTP from ALB only
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref BastionSecurityGroup
+          Description: SSH from Bastion
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+      Tags:
+        - Key: Name
+          Value: WebServer-SG
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: RDS-SG
+      GroupDescription: Security group for RDS MySQL
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref WebServerSecurityGroup
+          Description: MySQL from Web Servers
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref BastionSecurityGroup
+          Description: MySQL from Bastion
+      Tags:
+        - Key: Name
+          Value: RDS-SG
+
+  # ============================================
+  # S3 BUCKETS
+  # ============================================
+  WordPressUploadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'wordpress-uploads-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      Tags:
+        - Key: Name
+          Value: WordPress-Uploads
+
+  WordPressUploadsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WordPressUploadsBucket
+      PolicyDocument:
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource: !Sub '${WordPressUploadsBucket.Arn}/*'
+
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'wordpress-backups-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldBackups
+            Status: Enabled
+            ExpirationInDays: 30
+      Tags:
+        - Key: Name
+          Value: WordPress-Backups
+
+  # ============================================
+  # RDS MYSQL
+  # ============================================
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: wordpress-db-subnet-group
+      DBSubnetGroupDescription: Subnet group for RDS in private subnets
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+        - !Ref PrivateSubnet3
+      Tags:
+        - Key: Name
+          Value: WordPress-DB-Subnet-Group
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: wordpress-db
+      DBName: wordpress
+      Engine: mysql
+      EngineVersion: '8.0'
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: 20
+      StorageType: gp2
+      MasterUsername: admin
+      MasterUserPassword: !Ref DBPassword
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: '03:00-04:00'
+      PreferredMaintenanceWindow: 'sun:04:00-sun:05:00'
+      PubliclyAccessible: false
+      Tags:
+        - Key: Name
+          Value: WordPress-RDS-MySQL
+        - Key: BackupType
+          Value: automated
+
+  # ============================================
+  # BASTION HOST
+  # ============================================
+  BastionInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      IamInstanceProfile: LabInstanceProfile
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          SubnetId: !Ref PublicSubnet1
+          GroupSet:
+            - !Ref BastionSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          apt-get update
+          apt-get install -y mysql-client git awscli
+          snap install amazon-ssm-agent --classic || true
+          systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service
+          systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service
+          echo "Bastion configured" > /tmp/bastion-ready.txt
+      Tags:
+        - Key: Name
+          Value: Bastion-Host
+
+  # ============================================
+  # APPLICATION LOAD BALANCER
+  # ============================================
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: AttachGateway
+    Properties:
+      Name: WordPress-ALB
+      Type: application
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+        - !Ref PublicSubnet3
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: WordPress-ALB
+
+  WordPressTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: WordPress-TG
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetType: instance
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /
+      HealthCheckPort: traffic-port
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: 200,302
+      Tags:
+        - Key: Name
+          Value: WordPress-TG
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref WordPressTargetGroup
+
+  # ============================================
+  # INSTANCIA INICIAL PARA CREAR AMI
+  # ============================================
+  InitialWebServer:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - RDSInstance
+      - NATGateway
+      - EC2LogGroup
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      IamInstanceProfile: LabInstanceProfile
+      SubnetId: !Ref PrivateSubnet1
+      SecurityGroupIds:
+        - !Ref WebServerSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          exec > >(tee /var/log/user-data.log)
+          exec 2>&1
+
+          echo "=== Starting WordPress Initial Server Configuration ===" 
+          date
+
+          if ping -c 3 8.8.8.8 > /dev/null 2>&1; then
+            echo "✓ Internet connectivity OK"
+          else
+            echo "✗ ERROR: No Internet connectivity"
+            exit 1
+          fi
+
+          echo "=== Updating system packages ===" 
+          apt-get update -y
+          apt-get upgrade -y
+
+          echo "=== Installing SSM Agent ==="
+          snap install amazon-ssm-agent --classic || true
+          systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service
+          systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service
+
+          echo "=== Installing required packages ===" 
+          apt-get install -y apache2 php php-mysql php-curl php-gd php-mbstring             php-xml php-xmlrpc php-soap php-intl php-zip wget unzip mysql-client             awscli git rsync
+
+          echo "=== Downloading and installing WordPress ==="
+          cd /tmp
+          wget https://wordpress.org/latest.tar.gz
+          tar -xzf latest.tar.gz
+          cp -r wordpress/* /var/www/html/
+          rm -f /var/www/html/index.html
+
+          echo "=== Configuring WordPress wp-config.php ===" 
+          cp /var/www/html/wp-config-sample.php /var/www/html/wp-config.php
+          sed -i "s/database_name_here/wordpress/" /var/www/html/wp-config.php
+          sed -i "s/username_here/admin/" /var/www/html/wp-config.php
+          sed -i "s/password_here/${DBPassword}/" /var/www/html/wp-config.php
+          sed -i "s/localhost/${RDSInstance.Endpoint.Address}/" /var/www/html/wp-config.php
+
+          echo "=== Adding WordPress salt keys ===" 
+          curl -s https://api.wordpress.org/secret-key/1.1/salt/ >> /tmp/wp-keys.txt
+          sed -i '/AUTH_KEY/,/NONCE_SALT/d' /var/www/html/wp-config.php
+          sed -i "/DB_COLLATE/r /tmp/wp-keys.txt" /var/www/html/wp-config.php
+
+          echo "=== Adding S3 configuration ===" 
+          cat >> /var/www/html/wp-config.php << 'EOFS3'
+          define('AS3CF_AWS_USE_EC2_IAM_ROLE', true);
+          define('AS3CF_BUCKET', '${WordPressUploadsBucket}');
+          define('AS3CF_REGION', '${AWS::Region}');
+          EOFS3
+
+          echo "=== Cloning Health2You application into themes directory ===" 
+          cd /var/www/html/wp-content/themes/
+          git clone https://github.com/Samuel-reto/Grupo_2.git health2you || echo "Git clone failed"
+
+          if [ -d "health2you" ]; then
+            echo "✓ Repository cloned successfully to themes/health2you"
+            ls -la health2you/ | head -10
+          else
+            echo "✗ WARNING: Repository not cloned"
+          fi
+
+          echo "=== Creating Health2You database ===" 
+          mysql -h ${RDSInstance.Endpoint.Address} -u admin -p${DBPassword} << EOSQL
+          CREATE DATABASE IF NOT EXISTS health2you CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+          SHOW DATABASES;
+          EOSQL
+
+          if [ -f "/var/www/html/wp-content/themes/health2you/health2you.sql" ]; then
+            echo "=== Importing Health2You database schema ===" 
+            mysql -h ${RDSInstance.Endpoint.Address}               -u admin               -p${DBPassword}               health2you < /var/www/html/wp-content/themes/health2you/health2you.sql
+            echo "✓ Database schema imported successfully"
+          else
+            echo "⚠ SQL file not found, skipping database import"
+          fi
+
+          if [ -f "/var/www/html/wp-content/themes/health2you/config.php" ]; then
+            echo "=== Updating Health2You config.php with RDS credentials ===" 
+            sed -i "s/localhost/${RDSInstance.Endpoint.Address}/"               /var/www/html/wp-content/themes/health2you/config.php
+            echo "✓ Config.php updated"
+          fi
+
+          echo "=== Ensuring WordPress index.php is correct ===" 
+          cat > /var/www/html/index.php << 'EOFINDEX'
+          <?php
+          define( 'WP_USE_THEMES', true );
+          require __DIR__ . '/wp-blog-header.php';
+          EOFINDEX
+
+          echo "=== Setting permissions ===" 
+          chown -R www-data:www-data /var/www/html
+          chmod -R 755 /var/www/html
+          chmod 644 /var/www/html/index.php
+
+          echo "=== Configuring Apache ===" 
+          cat > /etc/apache2/sites-available/wordpress.conf << 'EOFAPACHE'
+          <VirtualHost *:80>
+            ServerAdmin webmaster@localhost
+            DocumentRoot /var/www/html
+
+            <Directory /var/www/html>
+              Options FollowSymLinks
+              AllowOverride All
+              Require all granted
+            </Directory>
+
+            ErrorLog /var/log/apache2/error.log
+            CustomLog /var/log/apache2/access.log combined
+          </VirtualHost>
+          EOFAPACHE
+
+          a2ensite wordpress
+          a2enmod rewrite
+          systemctl restart apache2
+
+          echo "=== Performing health check ===" 
+          sleep 10
+          HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}" http://localhost/)
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ]; then
+            echo "✓ WordPress is ready - HTTP $HTTP_CODE"
+          else
+            echo "⚠ WARNING: Unexpected HTTP code $HTTP_CODE"
+          fi
+
+          echo "=== Initial Server Configuration Complete ===" 
+          date
+      Tags:
+        - Key: Name
+          Value: WordPress-Initial-Server
+        - Key: Purpose
+          Value: CreateAMI
+
+  # ============================================
+  # LAUNCH TEMPLATE PARA AUTO SCALING
+  # ============================================
+  WebServerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: WordPress-Launch-Template
+      LaunchTemplateData:
+        ImageId: !If 
+          - UseProductionAMICondition
+          - !Ref ProductionAMI
+          - !Ref LatestAmiId
+        InstanceType: t2.micro
+        KeyName: !Ref KeyName
+        IamInstanceProfile:
+          Name: LabInstanceProfile
+        SecurityGroupIds:
+          - !Ref WebServerSecurityGroup
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -e
+            exec > >(tee /var/log/user-data.log)
+            exec 2>&1
+
+            echo "=== Starting Auto Scaling Instance Configuration ===" 
+            date
+
+            if [ ! -f /var/www/html/wp-config.php ]; then
+              echo "=== MODE: Base AMI - Full installation ===" 
+
+              apt-get update -y
+              snap install amazon-ssm-agent --classic || true
+              systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service
+              systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service
+
+              apt-get install -y apache2 php php-mysql php-curl php-gd php-mbstring                 php-xml php-xmlrpc php-soap php-intl php-zip wget unzip mysql-client                 awscli git rsync
+
+              cd /tmp
+              wget https://wordpress.org/latest.tar.gz
+              tar -xzf latest.tar.gz
+              cp -r wordpress/* /var/www/html/
+              rm -f /var/www/html/index.html
+
+              cp /var/www/html/wp-config-sample.php /var/www/html/wp-config.php
+              sed -i "s/database_name_here/wordpress/" /var/www/html/wp-config.php
+              sed -i "s/username_here/admin/" /var/www/html/wp-config.php
+              sed -i "s/password_here/${DBPassword}/" /var/www/html/wp-config.php
+              sed -i "s/localhost/${RDSInstance.Endpoint.Address}/" /var/www/html/wp-config.php
+
+              curl -s https://api.wordpress.org/secret-key/1.1/salt/ >> /tmp/wp-keys.txt
+              sed -i '/AUTH_KEY/,/NONCE_SALT/d' /var/www/html/wp-config.php
+              sed -i "/DB_COLLATE/r /tmp/wp-keys.txt" /var/www/html/wp-config.php
+
+              cat >> /var/www/html/wp-config.php << 'EOFS3'
+              define('AS3CF_AWS_USE_EC2_IAM_ROLE', true);
+              define('AS3CF_BUCKET', '${WordPressUploadsBucket}');
+              define('AS3CF_REGION', '${AWS::Region}');
+              EOFS3
+
+              cd /var/www/html/wp-content/themes/
+              git clone https://github.com/Samuel-reto/Grupo_2.git health2you || true
+
+              if [ -f "/var/www/html/wp-content/themes/health2you/health2you.sql" ]; then
+                mysql -h ${RDSInstance.Endpoint.Address} -u admin -p${DBPassword} << EOSQL
+              CREATE DATABASE IF NOT EXISTS health2you CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+              EOSQL
+                mysql -h ${RDSInstance.Endpoint.Address}                   -u admin                   -p${DBPassword}                   health2you < /var/www/html/wp-content/themes/health2you/health2you.sql || true
+              fi
+
+              if [ -f "/var/www/html/wp-content/themes/health2you/config.php" ]; then
+                sed -i "s/localhost/${RDSInstance.Endpoint.Address}/"                   /var/www/html/wp-content/themes/health2you/config.php
+              fi
+
+              cat > /var/www/html/index.php << 'EOFINDEX'
+              <?php
+              define( 'WP_USE_THEMES', true );
+              require __DIR__ . '/wp-blog-header.php';
+              EOFINDEX
+
+              chown -R www-data:www-data /var/www/html
+              chmod -R 755 /var/www/html
+              chmod 644 /var/www/html/index.php
+
+              cat > /etc/apache2/sites-available/wordpress.conf << 'EOFAPACHE'
+              <VirtualHost *:80>
+                ServerAdmin webmaster@localhost
+                DocumentRoot /var/www/html
+                <Directory /var/www/html>
+                  Options FollowSymLinks
+                  AllowOverride All
+                  Require all granted
+                </Directory>
+                ErrorLog /var/log/apache2/error.log
+                CustomLog /var/log/apache2/access.log combined
+              </VirtualHost>
+              EOFAPACHE
+
+              a2ensite wordpress
+              a2enmod rewrite
+              systemctl restart apache2
+            else
+              echo "=== MODE: Production AMI - Quick restart ===" 
+              systemctl restart apache2
+              systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent.service || true
+            fi
+
+            sleep 10
+            HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}" http://localhost/)
+            echo "Health check: HTTP $HTTP_CODE"
+
+            echo "=== Auto Scaling Instance Ready ===" 
+            date
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: WordPress-ASG-Instance
+              - Key: AMIType
+                Value: !If [UseProductionAMICondition, "production", "base"]
+
+  # ============================================
+  # AUTO SCALING GROUP (TIPO CORREGIDO)
+  # ============================================
+  WebServerAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - ApplicationLoadBalancer
+      - WordPressTargetGroup
+    Properties:
+      AutoScalingGroupName: WordPress-ASG
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebServerLaunchTemplate
+        Version: !GetAtt WebServerLaunchTemplate.LatestVersionNumber
+      MinSize: 2
+      MaxSize: 6
+      DesiredCapacity: 3
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 600
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+        - !Ref PrivateSubnet3
+      TargetGroupARNs:
+        - !Ref WordPressTargetGroup
+      Tags:
+        - Key: Name
+          Value: WordPress-ASG-Instance
+          PropagateAtLaunch: true
+
+  # ============================================
+  # LAMBDA FUNCTIONS PARA BACKUPS
+  # ============================================
+  DailyEC2SnapshotsLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: WordPress-Daily-EC2-Snapshots
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !Sub 'arn:aws:iam::${AWS::AccountId}:role/LabRole'
+      Timeout: 300
+      Environment:
+        Variables:
+          BACKUP_BUCKET: !Ref BackupBucket
+          ASG_NAME: !Ref WebServerAutoScalingGroup
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          from datetime import datetime
+          import os
+
+          def lambda_handler(event, context):
+              ec2 = boto3.client('ec2')
+              asg = boto3.client('autoscaling')
+              s3 = boto3.client('s3')
+
+              bucket = os.environ['BACKUP_BUCKET']
+              asg_name = os.environ['ASG_NAME']
+              today = datetime.now().strftime('%Y-%m-%d')
+
+              response = asg.describe_auto_scaling_groups(
+                  AutoScalingGroupNames=[asg_name]
+              )
+
+              instances = []
+              if response['AutoScalingGroups']:
+                  instances = [i['InstanceId'] for i in response['AutoScalingGroups'][0]['Instances']]
+
+              snapshots_created = []
+
+              for instance_id in instances:
+                  volumes = ec2.describe_volumes(
+                      Filters=[{'Name': 'attachment.instance-id', 'Values': [instance_id]}]
+                  )['Volumes']
+
+                  for volume in volumes:
+                      snapshot = ec2.create_snapshot(
+                          VolumeId=volume['VolumeId'],
+                          Description=f'WordPress Daily Backup - {today} - {instance_id}',
+                          TagSpecifications=[{
+                              'ResourceType': 'snapshot',
+                              'Tags': [
+                                  {'Key': 'Name', 'Value': f'WordPress-Daily-{today}'},
+                                  {'Key': 'BackupType', 'Value': 'incremental'},
+                                  {'Key': 'BackupDate', 'Value': today}
+                              ]
+                          }]
+                      )
+                      snapshots_created.append(snapshot['SnapshotId'])
+
+              metadata = {
+                  'date': today,
+                  'snapshots': snapshots_created,
+                  'instances': instances
+              }
+
+              s3.put_object(
+                  Bucket=bucket,
+                  Key=f'ec2-snapshots/incremental/{today}.json',
+                  Body=json.dumps(metadata, indent=2)
+              )
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps(f'Created {len(snapshots_created)} snapshots')
+              }
+
+  DailyRDSSnapshotsLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: WordPress-Daily-RDS-Snapshots
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !Sub 'arn:aws:iam::${AWS::AccountId}:role/LabRole'
+      Timeout: 300
+      Environment:
+        Variables:
+          BACKUP_BUCKET: !Ref BackupBucket
+          DB_INSTANCE: !Ref RDSInstance
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          from datetime import datetime
+          import os
+
+          def lambda_handler(event, context):
+              rds = boto3.client('rds')
+              s3 = boto3.client('s3')
+
+              bucket = os.environ['BACKUP_BUCKET']
+              db_instance = os.environ['DB_INSTANCE']
+              today = datetime.now().strftime('%Y-%m-%d')
+              snapshot_id = f'wordpress-daily-{today}'
+
+              response = rds.create_db_snapshot(
+                  DBSnapshotIdentifier=snapshot_id,
+                  DBInstanceIdentifier=db_instance,
+                  Tags=[
+                      {'Key': 'BackupType', 'Value': 'incremental'},
+                      {'Key': 'BackupDate', 'Value': today}
+                  ]
+              )
+
+              metadata = {
+                  'date': today,
+                  'snapshot_id': snapshot_id,
+                  'db_instance': db_instance
+              }
+
+              s3.put_object(
+                  Bucket=bucket,
+                  Key=f'rds-snapshots/incremental/{today}.json',
+                  Body=json.dumps(metadata, indent=2)
+              )
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps(f'Created snapshot: {snapshot_id}')
+              }
+
+  WeeklyFullBackupLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: WordPress-Weekly-Full-Backup
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !Sub 'arn:aws:iam::${AWS::AccountId}:role/LabRole'
+      Timeout: 600
+      Environment:
+        Variables:
+          BACKUP_BUCKET: !Ref BackupBucket
+          ASG_NAME: !Ref WebServerAutoScalingGroup
+          DB_INSTANCE: !Ref RDSInstance
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          from datetime import datetime, timedelta
+          import os
+
+          def lambda_handler(event, context):
+              ec2 = boto3.client('ec2')
+              rds = boto3.client('rds')
+              asg = boto3.client('autoscaling')
+              s3 = boto3.client('s3')
+
+              bucket = os.environ['BACKUP_BUCKET']
+              asg_name = os.environ['ASG_NAME']
+              db_instance = os.environ['DB_INSTANCE']
+              today = datetime.now().strftime('%Y-%m-%d')
+
+              response = asg.describe_auto_scaling_groups(
+                  AutoScalingGroupNames=[asg_name]
+              )
+
+              instances = []
+              ec2_snapshots = []
+
+              if response['AutoScalingGroups']:
+                  instances = [i['InstanceId'] for i in response['AutoScalingGroups'][0]['Instances']]
+
+              for instance_id in instances:
+                  volumes = ec2.describe_volumes(
+                      Filters=[{'Name': 'attachment.instance-id', 'Values': [instance_id]}]
+                  )['Volumes']
+
+                  for volume in volumes:
+                      snapshot = ec2.create_snapshot(
+                          VolumeId=volume['VolumeId'],
+                          Description=f'WordPress Weekly Full Backup - {today}',
+                          TagSpecifications=[{
+                              'ResourceType': 'snapshot',
+                              'Tags': [
+                                  {'Key': 'Name', 'Value': f'WordPress-Weekly-{today}'},
+                                  {'Key': 'BackupType', 'Value': 'full'},
+                                  {'Key': 'BackupDate', 'Value': today}
+                              ]
+                          }]
+                      )
+                      ec2_snapshots.append(snapshot['SnapshotId'])
+
+              rds_snapshot_id = f'wordpress-weekly-{today}'
+              rds.create_db_snapshot(
+                  DBSnapshotIdentifier=rds_snapshot_id,
+                  DBInstanceIdentifier=db_instance,
+                  Tags=[
+                      {'Key': 'BackupType', 'Value': 'full'},
+                      {'Key': 'BackupDate', 'Value': today}
+                  ]
+              )
+
+              metadata = {
+                  'date': today,
+                  'ec2_snapshots': ec2_snapshots,
+                  'rds_snapshot': rds_snapshot_id,
+                  'instances': instances
+              }
+
+              s3.put_object(
+                  Bucket=bucket,
+                  Key=f'weekly-full-backup/{today}.json',
+                  Body=json.dumps(metadata, indent=2)
+              )
+
+              cutoff_date = datetime.now() - timedelta(days=30)
+
+              ec2_snapshots_all = ec2.describe_snapshots(
+                  Filters=[{'Name': 'tag:BackupType', 'Values': ['incremental', 'full']}],
+                  OwnerIds=['self']
+              )['Snapshots']
+
+              for snapshot in ec2_snapshots_all:
+                  if snapshot['StartTime'].replace(tzinfo=None) < cutoff_date:
+                      ec2.delete_snapshot(SnapshotId=snapshot['SnapshotId'])
+
+              rds_snapshots_all = rds.describe_db_snapshots(
+                  DBInstanceIdentifier=db_instance,
+                  SnapshotType='manual'
+              )['DBSnapshots']
+
+              for snapshot in rds_snapshots_all:
+                  if snapshot['SnapshotCreateTime'].replace(tzinfo=None) < cutoff_date:
+                      rds.delete_db_snapshot(
+                          DBSnapshotIdentifier=snapshot['DBSnapshotIdentifier']
+                      )
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps(f'Weekly backup completed and old backups cleaned')
+              }
+
+  # ============================================
+  # EVENTBRIDGE RULES PARA PROGRAMAR BACKUPS
+  # ============================================
+  DailyEC2SnapshotsSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: WordPress-Daily-EC2-Snapshots
+      Description: Daily EC2 snapshots Mon-Sat at 02:00 UTC
+      ScheduleExpression: 'cron(0 2 ? * MON-SAT *)'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt DailyEC2SnapshotsLambda.Arn
+          Id: DailyEC2SnapshotsTarget
+
+  DailyRDSSnapshotsSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: WordPress-Daily-RDS-Snapshots
+      Description: Daily RDS snapshots Mon-Sat at 02:30 UTC
+      ScheduleExpression: 'cron(30 2 ? * MON-SAT *)'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt DailyRDSSnapshotsLambda.Arn
+          Id: DailyRDSSnapshotsTarget
+
+  WeeklyFullBackupSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: WordPress-Weekly-Full-Backup
+      Description: Weekly full backup on Sunday at 03:00 UTC
+      ScheduleExpression: 'cron(0 3 ? * SUN *)'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt WeeklyFullBackupLambda.Arn
+          Id: WeeklyFullBackupTarget
+
+  # Lambda permissions
+  PermissionForEventsToInvokeDailyEC2Lambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DailyEC2SnapshotsLambda
+      Action: 'lambda:InvokeFunction'
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt DailyEC2SnapshotsSchedule.Arn
+
+  PermissionForEventsToInvokeDailyRDSLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DailyRDSSnapshotsLambda
+      Action: 'lambda:InvokeFunction'
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt DailyRDSSnapshotsSchedule.Arn
+
+  PermissionForEventsToInvokeWeeklyLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WeeklyFullBackupLambda
+      Action: 'lambda:InvokeFunction'
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt WeeklyFullBackupSchedule.Arn
+
+# ============================================
+# OUTPUTS
+# ============================================
+Outputs:
+  VPCId:
+    Description: VPC ID
+    Value: !Ref VPC
+
+  LoadBalancerURL:
+    Description: URL del Application Load Balancer
+    Value: !Sub 'http://${ApplicationLoadBalancer.DNSName}'
+
+  LoadBalancerDNS:
+    Description: DNS del ALB
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+
+  BastionPublicIP:
+    Description: IP pública del Bastion Host
+    Value: !GetAtt BastionInstance.PublicIp
+
+  RDSEndpoint:
+    Description: Endpoint de RDS MySQL
+    Value: !GetAtt RDSInstance.Endpoint.Address
+
+  RDSPort:
+    Description: Puerto de RDS MySQL
+    Value: !GetAtt RDSInstance.Endpoint.Port
+
+  WordPressUploadsBucket:
+    Description: S3 Bucket para uploads de WordPress
+    Value: !Ref WordPressUploadsBucket
+
+  BackupBucket:
+    Description: S3 Bucket para backups
+    Value: !Ref BackupBucket
+
+  AutoScalingGroupName:
+    Description: Nombre del Auto Scaling Group
+    Value: !Ref WebServerAutoScalingGroup
+
+  InitialServerInstanceId:
+    Description: ID de la instancia inicial (para crear AMI)
+    Value: !Ref InitialWebServer
+
+  WordPressURL:
+    Description: URL de WordPress
+    Value: !Sub 'http://${ApplicationLoadBalancer.DNSName}/'
+
+  Health2YouURL:
+    Description: URL de la aplicación Health2You
+    Value: !Sub 'http://${ApplicationLoadBalancer.DNSName}/wp-content/themes/health2you/'
+
+  CurrentAMIMode:
+    Description: Modo actual de AMI
+    Value: !If 
+      - UseProductionAMICondition
+      - 'PRODUCCIÓN (AMI personalizada)'
+      - 'BASE (Ubuntu + instalación automática)'
+
+  SSHConnectionCommand:
+    Description: Comando para conectarse al Bastion
+    Value: !Sub 'ssh -i vockey.pem ubuntu@${BastionInstance.PublicIp}'
+
+  DatabaseInfo:
+    Description: Información de bases de datos creadas
+    Value: 'wordpress (para WordPress) y health2you (para aplicación Health2You)'

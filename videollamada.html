@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Videoconsulta - Health 2 You</title>
+    
+    <!-- Librería Jitsi -->
+    <script src='https://meet.jit.si/external_api.js'></script>
+    <!-- Fuente -->
+    <link href="https://fonts.googleapis.com/css2?family=Segoe+UI:wght@300;400;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        /* ESTILOS FIJOS (Sin PHP) */
+        body { margin: 0; font-family: 'Segoe UI', sans-serif; background-color: #f4f6f8; height: 100vh; display: flex; flex-direction: column; }
+
+        /* HEADER */
+        header { background: white; height: 70px; display: flex; align-items: center; justify-content: space-between; padding: 0 30px; border-bottom: 2px solid #ddd; }
+        .btn-volver { text-decoration: none; color: #333; font-weight: bold; background: #eee; padding: 8px 15px; border-radius: 20px; }
+        .user-tag { background: #e8f5e9; color: #0f9d58; padding: 5px 15px; border-radius: 20px; font-weight: bold; }
+
+        /* LAYOUT */
+        .main { display: flex; flex: 1; padding: 20px; gap: 20px; height: calc(100vh - 70px); box-sizing: border-box; }
+        
+        /* VIDEO */
+        .video-container { flex: 3; background: black; border-radius: 15px; overflow: hidden; position: relative; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
+        #jitsi-meet { width: 100%; height: 100%; }
+
+        /* LATERAL */
+        .sidebar { flex: 1; min-width: 300px; background: white; border-radius: 15px; padding: 25px; display: flex; flex-direction: column; align-items: center; text-align: center; box-shadow: 0 5px 15px rgba(0,0,0,0.05); }
+        
+        .logo { width: 100px; height: 100px; object-fit: contain; margin-bottom: 15px; }
+        h2 { margin: 0 0 5px 0; color: #333; }
+        p { margin: 0 0 20px 0; color: #777; font-size: 0.9rem; }
+
+        .info-card { width: 100%; background: #f8f9fa; padding: 15px; border-radius: 8px; border-left: 4px solid #0f9d58; text-align: left; margin-bottom: 15px; }
+        .label { font-size: 0.7rem; color: #666; text-transform: uppercase; font-weight: bold; }
+        .val { font-size: 1.1rem; font-weight: 600; color: #333; }
+
+        .btn-end { margin-top: auto; width: 100%; padding: 15px; background: #ff4757; color: white; border: none; border-radius: 8px; font-size: 1rem; font-weight: bold; cursor: pointer; }
+        .btn-end:hover { background: #ff6b81; }
+
+        /* MENSAJE SALA LLENA */
+        .full-msg { display: none; position: absolute; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.9); color: white; flex-direction: column; justify-content: center; align-items: center; z-index: 99; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <!-- Enlace para volver atrás -->
+        <a href="javascript:history.back()" class="btn-volver">⬅ Volver</a>
+        <div class="user-tag">👤 Usuario Conectado</div>
+    </header>
+
+    <div class="main">
+        <div class="video-container">
+            <div id="jitsi-meet"></div>
+            <!-- Aviso oculto -->
+            <div id="aviso" class="full-msg">
+                <h1>⛔ SALA LLENA</h1>
+                <p>Solo se permiten 2 personas.</p>
+            </div>
+        </div>
+
+        <div class="sidebar">
+            <!-- LOGO FIJO -->
+            <img src="Logo_empresa_grupo_2.png" alt="Logo" class="logo">
+            <h2>HEALTH 2 YOU</h2>
+            <p>Videoconsulta Urgente</p>
+
+            <div class="info-card">
+                <div class="label">SALA DE REUNIÓN</div>
+                <div class="val" id="sala-id">Generando...</div>
+            </div>
+
+            <button onclick="colgar()" class="btn-end">Finalizar Llamada</button>
+        </div>
+    </div>
+
+    <script>
+        // 1. CAPTURAR ID DE LA URL (Ej: videoconsulta.html?id=123)
+        const params = new URLSearchParams(window.location.search);
+        // Si no hay ID en la URL, se inventa uno "TEST"
+        const citaID = params.get('id') || 'TEST-GENERAL';
+        
+        // Mostrar ID en pantalla
+        document.getElementById('sala-id').innerText = '#' + citaID;
+
+        // 2. CONFIGURAR JITSI
+        const domain = 'meet.jit.si';
+        const options = {
+            roomName: 'Health2You_Sala_' + citaID,
+            width: '100%',
+            height: '100%',
+            parentNode: document.querySelector('#jitsi-meet'),
+            lang: 'es',
+            configOverwrite: { 
+                startWithAudioMuted: false, 
+                startWithVideoMuted: false,
+                prejoinPageEnabled: false,    // Sin pantalla previa
+                disableDeepLinking: true      // No abrir app móvil
+            },
+            interfaceConfigOverwrite: {
+                TOOLBAR_BUTTONS: ['microphone', 'camera', 'desktop', 'hangup', 'chat'],
+                SHOW_JITSI_WATERMARK: false
+            }
+        };
+
+        const api = new JitsiMeetExternalAPI(domain, options);
+
+        // 3. CONTROL DE 2 PERSONAS
+        api.addEventListener('videoConferenceJoined', () => checkFull());
+        api.addEventListener('participantJoined', () => setTimeout(checkFull, 1000));
+
+        function checkFull() {
+            if (api.getNumberOfParticipants() > 2) {
+                document.getElementById('aviso').style.display = 'flex';
+                api.dispose();
+            }
+        }
+
+        // 4. FUNCIÓN COLGAR
+        function colgar() {
+            // Cambia esto por la URL de tu panel si quieres que vaya directo
+            // window.location.href = 'dashboard_paciente.php'; 
+            window.history.back();
+        }
+    </script>
+
+</body>
+</html>

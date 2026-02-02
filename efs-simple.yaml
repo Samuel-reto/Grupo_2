@@ -1,0 +1,123 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: 'EFS (Elastic File System) para WordPress'
+
+Parameters:
+  VPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: Selecciona la VPC de WordPress
+
+  WebServerSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Selecciona el Security Group de WebServer-SG
+
+  PrivateSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Selecciona Private-Subnet-1
+
+  PrivateSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Selecciona Private-Subnet-2
+
+  PrivateSubnet3Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: Selecciona Private-Subnet-3
+
+Resources:
+
+  # ============================================
+  # EFS SECURITY GROUP
+  # ============================================
+
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: EFS-SG
+      GroupDescription: Security group for EFS
+      VpcId: !Ref VPCId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref WebServerSecurityGroupId
+          Description: NFS from Web Servers
+      Tags:
+        - Key: Name
+          Value: EFS-SG
+
+  # ============================================
+  # EFS FILE SYSTEM
+  # ============================================
+
+  EFSFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      PerformanceMode: generalPurpose
+      Encrypted: true
+      ThroughputMode: bursting
+      LifecyclePolicies:
+        - TransitionToIA: AFTER_30_DAYS
+      FileSystemTags:
+        - Key: Name
+          Value: WordPress-EFS
+
+  # ============================================
+  # EFS MOUNT TARGETS
+  # ============================================
+
+  EFSMountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SubnetId: !Ref PrivateSubnet1Id
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  EFSMountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SubnetId: !Ref PrivateSubnet2Id
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  EFSMountTarget3:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SubnetId: !Ref PrivateSubnet3Id
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+# ============================================
+# OUTPUTS
+# ============================================
+
+Outputs:
+
+  EFSSecurityGroupId:
+    Description: EFS Security Group ID
+    Value: !Ref EFSSecurityGroup
+
+  EFSFileSystemId:
+    Description: EFS File System ID
+    Value: !Ref EFSFileSystem
+
+  EFSFileSystemDNS:
+    Description: EFS DNS name for mounting
+    Value: !Sub '${EFSFileSystem}.efs.${AWS::Region}.amazonaws.com'
+
+  MountCommand:
+    Description: Comando para montar EFS en las instancias EC2
+    Value: !Sub |
+      # Instalar cliente NFS
+      sudo apt-get install -y nfs-common
+
+      # Crear directorio de montaje
+      sudo mkdir -p /mnt/efs
+
+      # Montar EFS
+      sudo mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport ${EFSFileSystem}.efs.${AWS::Region}.amazonaws.com:/ /mnt/efs
+
+      # Para montaje permanente, añadir a /etc/fstab:
+      echo "${EFSFileSystem}.efs.${AWS::Region}.amazonaws.com:/ /mnt/efs nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport,_netdev 0 0" | sudo tee -a /etc/fstab

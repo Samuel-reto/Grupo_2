@@ -1,0 +1,14 @@
+/*
+Theme Name: Health2You
+Theme URI: https://health2you.com
+Description: Sistema completo de gestión de citas médicas para Atención Primaria. Incluye login pacientes/médicos, agenda, franjas horarias y gestión completa de citas.
+Version: 2.0
+Author: Raquel ASIR
+License: GNU General Public License v2 or later
+License URI: http://www.gnu.org/licenses/gpl-2.0.html
+Text Domain: health2you
+Tags: healthcare, medical, appointments, portal
+*/
+
+/* Importar estilos reales desde styles.css */
+@import url('styles.css');
