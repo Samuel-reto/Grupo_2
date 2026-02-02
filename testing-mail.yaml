@@ -467,35 +467,50 @@ Resources:
       SecurityGroups:
         - !Ref EFSSecurityGroup
 
- # ============================================
-# S3 BUCKETS
-# ============================================
-ReportsBucket:
-  Type: AWS::S3::Bucket
-  Properties:
-    BucketName: !Sub 'wordpress-reports-${AWS::AccountId}'
-    VersioningConfiguration:
-      Status: Enabled
-    PublicAccessBlockConfiguration:
-      BlockPublicAcls: false
-      BlockPublicPolicy: false
-      IgnorePublicAcls: false
-      RestrictPublicBuckets: false
-    Tags:
-      - Key: Name
-        Value: WordPress-Reports
+  # ============================================
+  # S3 BUCKETS
+  # ============================================
+  ReportsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'wordpress-reports-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      Tags:
+        - Key: Name
+          Value: WordPress-Reports
+  
+  ReportsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ReportsBucket
+      PolicyDocument:
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource: !Sub '${ReportsBucket.Arn}/*'
 
-ReportsBucketPolicy:
-  Type: AWS::S3::BucketPolicy
-  Properties:
-    Bucket: !Ref ReportsBucket
-    PolicyDocument:
-      Statement:
-        - Sid: PublicReadGetObject
-          Effect: Allow
-          Principal: '*'
-          Action: 's3:GetObject'
-          Resource: !Sub '${ReportsBucket.Arn}/*'
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'wordpress-backups-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldBackups
+            Status: Enabled
+            ExpirationInDays: 30
+      Tags:
+        - Key: Name
+          Value: WordPress-Backups
 
   # ============================================
   # SECRETS MANAGER PARA RDS PROXY
@@ -596,188 +611,124 @@ ReportsBucketPolicy:
         MaxIdleConnectionsPercent: 50
         ConnectionBorrowTimeout: 120
 
-# ============================================
-# BASTION HOST
-# ============================================
-BastionInstance:
-  Type: AWS::EC2::Instance
-  Properties:
-    ImageId: !Ref LatestAmiId
-    InstanceType: t2.micro
-    KeyName: !Ref KeyName
-    IamInstanceProfile: LabInstanceProfile
-    NetworkInterfaces:
-      - AssociatePublicIpAddress: true
-        DeviceIndex: 0
-        SubnetId: !Ref PublicSubnet1
-        GroupSet:
-          - !Ref BastionSecurityGroup
-    UserData:
-      Fn::Base64: !Sub |
-        #!/bin/bash
-        set -e
-
-        echo "=== Configurando Bastion Host con PowerShell (AUTOMATIZADO) ==="
-        date
-
-        # Actualizar sistema
-        apt-get update
-        apt-get install -y mysql-client git awscli nfs-common curl jq
-
-        # ============================================
-        # INSTALAR POWERSHELL
-        # ============================================
-        echo "=== Instalando PowerShell ==="
-        curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/powershell.gpg
-        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/powershell.gpg] https://packages.microsoft.com/ubuntu/22.04/prod jammy main" | tee /etc/apt/sources.list.d/microsoft-powershell.list
-        apt-get update
-        apt-get install -y powershell
-        pwsh --version
-        echo "✓ PowerShell instalado correctamente"
-
-        # ============================================
-        # INSTALAR SSM AGENT
-        # ============================================
-        echo "=== Instalando SSM Agent ==="
-        snap install amazon-ssm-agent --classic || true
-        systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service
-        systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service
-
-        # ============================================
-        # CONFIGURAR CLAVE SSH
-        # ============================================
-        echo "=== Configurando acceso SSH a instancias del ASG ==="
-        mkdir -p /home/ubuntu/.ssh
-
-        cat >> /home/ubuntu/.ssh/config << 'EOF'
-        Host *
-            StrictHostKeyChecking no
-            UserKnownHostsFile=/dev/null
-            LogLevel ERROR
-        EOF
-
-        chown -R ubuntu:ubuntu /home/ubuntu/.ssh
-        chmod 700 /home/ubuntu/.ssh
-        chmod 600 /home/ubuntu/.ssh/config 2>/dev/null || true
-
-        # ============================================
-        # OBTENER SNS TOPIC ARN AUTOMÁTICAMENTE
-        # ============================================
-        echo "=== Obteniendo configuración del stack ==="
-
-        STACK_NAME="${AWS::StackName}"
-        REGION="${AWS::Region}"
-
-        # Esperar a que el stack esté completamente creado
-        sleep 30
-
-        # Obtener el SNS Topic ARN desde los outputs del stack
-        SNS_TOPIC_ARN=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$REGION" \
-            --query 'Stacks[0].Outputs[?OutputKey==`MonitoringSNSTopicArn`].OutputValue' \
-            --output text 2>/dev/null || echo "")
-
-        if [ -z "$SNS_TOPIC_ARN" ] || [ "$SNS_TOPIC_ARN" == "None" ]; then
-          echo "⚠️  SNS Topic no configurado (no se proporcionó email). Los reportes se guardarán localmente."
-          SNS_TOPIC_ARN=""
-        else
-          echo "✓ SNS Topic ARN obtenido: $SNS_TOPIC_ARN"
-        fi
-
-        # ============================================
-        # OBTENER S3 BUCKET AUTOMÁTICAMENTE
-        # ============================================
-        S3_BUCKET=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$REGION" \
-            --query 'Stacks[0].Outputs[?OutputKey==`WordPressUploadsBucketName`].OutputValue' \
-            --output text 2>/dev/null || echo "")
-
-        if [ -z "$S3_BUCKET" ] || [ "$S3_BUCKET" == "None" ]; then
-          echo "⚠️  S3 Bucket no encontrado en outputs"
-          S3_BUCKET=""
-        else
-          echo "✓ S3 Bucket obtenido: $S3_BUCKET"
-        fi
-
-        # ============================================
-        # DESCARGAR SCRIPT DE MONITOREO DESDE GITHUB
-        # ============================================
-        echo "=== Descargando script de monitoreo desde GitHub ==="
-        mkdir -p /opt/wordpress-monitor
-        cd /opt/wordpress-monitor
-
-        # Descargar script FINAL desde GitHub
-        GITHUB_REPO="https://raw.githubusercontent.com/Samuel-reto/Grupo_2/main"
-        curl -o Monitor-WordPressLogs-FINAL-CLEAN.ps1 "$GITHUB_REPO/Monitor-WordPressLogs-FINAL-CLEAN.ps1" || {
-          echo "⚠️  Error descargando script desde GitHub"
-        }
-
-        chmod +x Monitor-WordPressLogs-FINAL-CLEAN.ps1
-
-        if [ -f "Monitor-WordPressLogs-FINAL-CLEAN.ps1" ]; then
-          echo "✓ Script de monitoreo descargado correctamente"
-          ls -lh Monitor-WordPressLogs-FINAL-CLEAN.ps1
-        fi
-
-        # Crear directorio de logs
-        mkdir -p /var/log
-        touch /var/log/wordpress-monitor.log
-        chown ubuntu:ubuntu /var/log/wordpress-monitor.log
-
-        # ============================================
-        # CONFIGURAR VARIABLES DE ENTORNO COMPLETAS
-        # ============================================
-        echo "=== Configurando variables de entorno ==="
-
-        cat > /opt/wordpress-monitor/config.env << EOFCONFIG
-        # Configuración del monitor de WordPress (GENERADA AUTOMÁTICAMENTE)
-        export AWS_REGION="$REGION"
-        export ASG_NAME="WordPress-ASG"
-        export SNS_TOPIC_ARN="$SNS_TOPIC_ARN"
-        export S3_BUCKET="$S3_BUCKET"
-        EOFCONFIG
-
-        chown ubuntu:ubuntu /opt/wordpress-monitor/config.env
-
-        echo "✓ Configuración guardada:"
-        cat /opt/wordpress-monitor/config.env
-
-        # ============================================
-        # CONFIGURAR WRAPPER Y CRON JOB
-        # ============================================
-        echo "=== Configurando tarea CRON ==="
-
-        cat > /opt/wordpress-monitor/run-monitor.sh << 'EOFWRAPPER'
-        #!/bin/bash
-        source /opt/wordpress-monitor/config.env 2>/dev/null || {
-            echo "Error cargando config.env" >&2
-            exit 1
-        }
-        echo "=== $(date) ===" >> /var/log/wordpress-monitor.log
-        /usr/bin/pwsh /opt/wordpress-monitor/Monitor-WordPressLogs-FINAL-CLEAN.ps1 >> /var/log/wordpress-monitor.log 2>&1
-        echo "$(date): Monitor ejecutado ✓" >> /var/log/wordpress-monitor-cron.log
-        EOFWRAPPER
-
-        chmod +x /opt/wordpress-monitor/run-monitor.sh
-        chown ubuntu:ubuntu /opt/wordpress-monitor/run-monitor.sh
-
-        # Configurar CRON
-        (crontab -u ubuntu -l 2>/dev/null || true; echo "0 */6 * * * /opt/wordpress-monitor/run-monitor.sh >> /var/log/wordpress-monitor-cron.log 2>&1"; echo "0 8 * * * /opt/wordpress-monitor/run-monitor.sh >> /var/log/wordpress-monitor-cron.log 2>&1") | crontab -u ubuntu -
-
-        echo "✓ Tareas CRON configuradas (6h + 8AM)"
-
-        # ============================================
-        # PRUEBA INMEDIATA
-        # ============================================
-        echo "=== Ejecutando primera prueba ==="
-        sleep 10
-        sudo -u ubuntu /opt/wordpress-monitor/run-monitor.sh
-
-        echo "🎉 BASTION CONFIGURADO COMPLETAMENTE - Monitoring activo!"
-        EOFCONFIG
-
+  # ============================================
+  # BASTION HOST
+  # ============================================
+  BastionInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      IamInstanceProfile: LabInstanceProfile
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          SubnetId: !Ref PublicSubnet1
+          GroupSet:
+            - !Ref BastionSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          
+          echo "=== Configurando Bastion Host con PowerShell + datos.sh (AUTOMATIZADO) ==="
+          date
+          
+          # Actualizar sistema
+          apt-get update
+          apt-get install -y mysql-client git awscli nfs-common curl jq
+          
+          # ============================================
+          # INSTALAR POWERSHELL
+          # ============================================
+          echo "=== Instalando PowerShell ==="
+          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/powershell.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/powershell.gpg] https://packages.microsoft.com/ubuntu/22.04/prod jammy main" | tee /etc/apt/sources.list.d/microsoft-powershell.list
+          apt-get update
+          apt-get install -y powershell
+          pwsh --version
+          echo "✓ PowerShell instalado correctamente"
+          
+          # ============================================
+          # INSTALAR SSM AGENT
+          # ============================================
+          echo "=== Instalando SSM Agent ==="
+          snap install amazon-ssm-agent --classic || true
+          systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service
+          systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service
+          
+          # ============================================
+          # CONFIGURAR CLAVE SSH
+          # ============================================
+          echo "=== Configurando acceso SSH a instancias del ASG ==="
+          mkdir -p /home/ubuntu/.ssh
+          
+          cat >> /home/ubuntu/.ssh/config << 'EOF'
+          Host *
+              StrictHostKeyChecking no
+              UserKnownHostsFile=/dev/null
+              LogLevel ERROR
+          EOF
+          
+          chown -R ubuntu:ubuntu /home/ubuntu/.ssh
+          chmod 700 /home/ubuntu/.ssh
+          chmod 600 /home/ubuntu/.ssh/config 2>/dev/null || true
+          
+          # ============================================
+          # DESCARGAR SCRIPT DE MONITOREO DESDE GITHUB
+          # ============================================
+          echo "=== Descargando scripts de monitoreo desde GitHub ==="
+          mkdir -p /opt/wordpress-monitor
+          cd /opt/wordpress-monitor
+          
+          # Descargar monitor principal
+          GITHUB_REPO="https://raw.githubusercontent.com/Samuel-reto/Grupo_2/main"
+          curl -o Monitor-WordPressLogs.ps1 "$GITHUB_REPO/Monitor-WordPressLogs.ps1"
+          chmod +x Monitor-WordPressLogs.ps1
+          
+          # ============================================
+          # 🎯 NUEVO: DESCARGAR Y EJECUTAR datos.sh
+          # ============================================
+          echo "=== Descargando datos.sh (CONFIG AUTO SNS/S3) ==="
+          curl -o datos.sh "$GITHUB_REPO/datos.sh"
+          chmod +x datos.sh
+          chown ubuntu:ubuntu datos.sh
+          
+          echo "=== Ejecutando datos.sh en background ==="
+          # Ejecutar datos.sh EN BACKGROUND - NO BLOQUEA
+          sudo -u ubuntu ./datos.sh &
+          
+          # ============================================
+          # CONFIGURAR WRAPPER Y CRON JOB
+          # ============================================
+          echo "=== Configurando tarea CRON ==="
+          
+          cat > /opt/wordpress-monitor/run-monitor.sh << 'EOFWRAPPER'
+          #!/bin/bash
+          source /opt/wordpress-monitor/config.env 2>/dev/null || {
+              echo "Error cargando config.env - datos.sh aún configurando..." >&2
+              exit 1
+          }
+          echo "=== $(date) ===" >> /var/log/wordpress-monitor.log
+          /usr/bin/pwsh /opt/wordpress-monitor/Monitor-WordPressLogs.ps1 >> /var/log/wordpress-monitor.log 2>&1
+          echo "$(date): Monitor ejecutado ✓" >> /var/log/wordpress-monitor-cron.log
+          EOFWRAPPER
+          
+          chmod +x /opt/wordpress-monitor/run-monitor.sh
+          chown ubuntu:ubuntu /opt/wordpress-monitor/run-monitor.sh
+          
+          # Crear directorio de logs
+          mkdir -p /var/log
+          touch /var/log/wordpress-monitor.log /var/log/wordpress-monitor-cron.log
+          chown ubuntu:ubuntu /var/log/wordpress-*.log
+          
+          # Configurar CRON
+          (crontab -u ubuntu -l 2>/dev/null || true; echo "0 */6 * * * /opt/wordpress-monitor/run-monitor.sh >> /var/log/wordpress-monitor-cron.log 2>&1"; echo "0 8 * * * /opt/wordpress-monitor/run-monitor.sh >> /var/log/wordpress-monitor-cron.log 2>&1") | crontab -u ubuntu -
+          
+          echo "✓ Tareas CRON configuradas (6h + 8AM)"
+          
+          echo "🎉 BASTION + datos.sh + MONITOR CONFIGURADO AUTOMÁTICAMENTE $(date)"
 
   # ============================================
   # APPLICATION LOAD BALANCER
@@ -934,15 +885,18 @@ BastionInstance:
             sed -i '/AUTH_KEY/,/NONCE_SALT/d' /var/www/html/wp-config.php
             sed -i "/DB_COLLATE/r /tmp/wp-keys.txt" /var/www/html/wp-config.php
 
-            echo "=== Adding HTTPS configuration before stop editing comment ==="
-            sed -i "/\/\* That's all, stop editing! Happy publishing. \*\//i\\n\// Configuración HTTPS detrás de ALB\nif (isset(\\$_SERVER['HTTP_X_FORWARDED_PROTO']) && \\$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {\n    \\$_SERVER['HTTPS'] = 'on';\n}\ndefine('WP_HOME', 'https://www.aglinformatica2.com.es');\ndefine('WP_SITEURL', 'https://www.aglinformatica2.com.es');\ndefine('FORCE_SSL_ADMIN', true);\n" /var/www/html/wp-config.php
-
-            echo "=== Adding S3 configuration ==="
-            cat >> /var/www/html/wp-config.php << 'EOFS3'
-            define('AS3CF_AWS_USE_EC2_IAM_ROLE', true);
-            define('AS3CF_BUCKET', '${WordPressUploadsBucket}');
-            define('AS3CF_REGION', '${AWS::Region}');
-            EOFS3
+            echo "=== Adding HTTPS configuration to wp-config.php ==="
+            # Insertar configuración HTTPS ANTES del comentario "That's all, stop editing!"
+            sed -i "/\/\* That's all, stop editing! Happy publishing. \*\//i\\
+            \\
+            \/\/ Configuración HTTPS detrás de ALB\\
+            if (isset(\\\$_SERVER['HTTP_X_FORWARDED_PROTO']) && \\\$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {\\
+                \\\$_SERVER['HTTPS'] = 'on';\\
+            }\\
+            define('WP_HOME', 'https://www.aglinformatica2.com.es');\\
+            define('WP_SITEURL', 'https://www.aglinformatica2.com.es');\\
+            define('FORCE_SSL_ADMIN', true);\\
+            " /var/www/html/wp-config.php
 
             echo "=== Cloning GitHub repository to EFS ==="
             cd /var/www/html/wp-content/themes/
@@ -1089,14 +1043,19 @@ BastionInstance:
                 sed -i '/AUTH_KEY/,/NONCE_SALT/d' /var/www/html/wp-config.php
                 sed -i "/DB_COLLATE/r /tmp/wp-keys.txt" /var/www/html/wp-config.php
 
-                sed -i "/\/\* That's all, stop editing! Happy publishing. \*\//i\\n\// Configuración HTTPS detrás de ALB\nif (isset(\\$_SERVER['HTTP_X_FORWARDED_PROTO']) && \\$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {\n    \\$_SERVER['HTTPS'] = 'on';\n}\ndefine('WP_HOME', 'https://www.aglinformatica2.com.es');\ndefine('WP_SITEURL', 'https://www.aglinformatica2.com.es');\ndefine('FORCE_SSL_ADMIN', true);\n" /var/www/html/wp-config.php
+                echo "=== Adding HTTPS configuration to wp-config.php ==="
+                sed -i "/\/\* That's all, stop editing! Happy publishing. \*\//i\\
+                \\
+                \/\/ Configuración HTTPS detrás de ALB\\
+                if (isset(\\\$_SERVER['HTTP_X_FORWARDED_PROTO']) && \\\$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {\\
+                    \\\$_SERVER['HTTPS'] = 'on';\\
+                }\\
+                define('WP_HOME', 'https://www.aglinformatica2.com.es');\\
+                define('WP_SITEURL', 'https://www.aglinformatica2.com.es');\\
+                define('FORCE_SSL_ADMIN', true);\\
+                " /var/www/html/wp-config.php
 
-                cat >> /var/www/html/wp-config.php << 'EOFS3'
-            define('AS3CF_AWS_USE_EC2_IAM_ROLE', true);
-            define('AS3CF_BUCKET', '${WordPressUploadsBucket}');
-            define('AS3CF_REGION', '${AWS::Region}');
-            EOFS3
-
+                echo "=== Cloning GitHub repository to EFS ==="
                 cd /var/www/html/wp-content/themes/
                 git clone https://github.com/Samuel-reto/Grupo_2.git health2you || true
 
@@ -1605,8 +1564,8 @@ Outputs:
     Value: !Sub 'sudo mount -t nfs4 -o nfsvers=4.1 ${EFSFileSystem}.efs.${AWS::Region}.amazonaws.com:/ /var/www/html'
 
   ReportsBucketName:
-  Description: S3 Bucket para reportes de WordPress
-  Value: !Ref ReportsBucket
+    Description: S3 Bucket para reportes de WordPress
+    Value: !Ref ReportsBucket
 
   BackupBucket:
     Description: S3 Bucket para backups
