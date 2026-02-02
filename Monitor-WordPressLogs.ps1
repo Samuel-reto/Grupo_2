@@ -120,7 +120,7 @@ tr:hover{background:#f7fafc;}
 <body>
 <div class="container">
 <div class="header">
-<h1>📊 WordPress Enterprise Dashboard</h1>
+<h1>Health2You ⚕️</h1>
 <p style="margin:5px 0 0 0;opacity:0.9;">$(Get-Date -Format 'dd MMMM yyyy - HH:mm:ss')</p>
 </div>
 
