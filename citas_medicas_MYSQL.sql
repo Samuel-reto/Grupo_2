@@ -1,18 +1,19 @@
 -- =====================================================
--- DDL MySQL RDS - Citas Médicas + TELÉFONO + PASSWORD_HASH
--- Convertido desde PostgreSQL para compatibilidad MySQL
+-- DDL MySQL RDS - Citas Médicas + ADMINISTRATIVOS
 -- =====================================================
 
 -- 1. DROP de tablas, triggers y vistas
 DROP TABLE IF EXISTS justificante;
 DROP TABLE IF EXISTS cita;
+DROP TABLE IF EXISTS administrativo;
 DROP TABLE IF EXISTS paciente;
 DROP TABLE IF EXISTS medico;
 
 DROP TRIGGER IF EXISTS trigger_justificante;
 DROP VIEW IF EXISTS vista_citas_completas;
 
--- 2. Crear tablas con AUTO_INCREMENT + password_hash integrado
+-- 2. Crear tablas
+
 CREATE TABLE paciente (
   paciente_id INT AUTO_INCREMENT PRIMARY KEY,
   nombre VARCHAR(100) NOT NULL,
@@ -34,16 +35,27 @@ CREATE TABLE medico (
   password_hash VARCHAR(255) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE administrativo (
+  administrativo_id INT AUTO_INCREMENT PRIMARY KEY,
+  nombre VARCHAR(100) NOT NULL,
+  apellidos VARCHAR(100) NOT NULL,
+  email VARCHAR(100) UNIQUE NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  fecha_alta TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE cita (
   cita_id INT AUTO_INCREMENT PRIMARY KEY,
   paciente_id INT NOT NULL,
   medico_id INT NOT NULL,
+  administrativo_id INT NULL,
   fecha_hora_inicio DATETIME NOT NULL,
   fecha_hora_fin DATETIME NOT NULL,
   estado VARCHAR(20) DEFAULT 'pendiente',
   fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (paciente_id) REFERENCES paciente(paciente_id),
   FOREIGN KEY (medico_id) REFERENCES medico(medico_id),
+  FOREIGN KEY (administrativo_id) REFERENCES administrativo(administrativo_id),
   CHECK (estado IN ('pendiente', 'asistida', 'cancelada')),
   CHECK (fecha_hora_fin > fecha_hora_inicio)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -65,10 +77,10 @@ CREATE INDEX idx_medico_colegiado ON medico(colegiado);
 CREATE INDEX idx_medico_especialidad ON medico(especialidad);
 CREATE INDEX idx_cita_paciente ON cita(paciente_id);
 CREATE INDEX idx_cita_medico ON cita(medico_id);
+CREATE INDEX idx_cita_admin ON cita(administrativo_id);
 CREATE INDEX idx_cita_fecha ON cita(fecha_hora_inicio);
-CREATE INDEX idx_justificante_cita ON justificante(cita_id);
 
--- 4. TRIGGER (adaptado a MySQL)
+-- 4. TRIGGER
 DELIMITER $$
 
 CREATE TRIGGER trigger_justificante
@@ -87,7 +99,7 @@ END$$
 
 DELIMITER ;
 
--- 5. VISTA con CONCAT en lugar de ||
+-- 5. VISTA ACTUALIZADA
 CREATE VIEW vista_citas_completas AS
 SELECT
   c.cita_id,
@@ -97,6 +109,7 @@ SELECT
   m.medico_id,
   CONCAT(m.nombre, ' ', m.apellidos) AS medico_nombre,
   m.especialidad,
+  CONCAT(a.nombre, ' ', a.apellidos) AS administrativo_nombre,
   c.fecha_hora_inicio,
   c.estado,
   j.numero_serie,
@@ -104,14 +117,5 @@ SELECT
 FROM cita c
 JOIN paciente p ON c.paciente_id = p.paciente_id
 JOIN medico m ON c.medico_id = m.medico_id
+LEFT JOIN administrativo a ON c.administrativo_id = a.administrativo_id
 LEFT JOIN justificante j ON c.cita_id = j.cita_id;
-
--- 6. Datos de prueba con teléfono y password_hash ejemplo (COMENTADOS - descomentar si necesitas)
-/*
-INSERT INTO paciente (nombre, apellidos, numero_tsi, telefono, email, password_hash) VALUES
-('María', 'García López', 'CANT390123456789', '600123456', NULL, '$2y$10$demo_hash_paciente'),
-('Juan', 'Pérez Martínez', 'CANT391234567890', '942765432', 'juan@email.com', '$2y$10$demo_hash_juan');
-
-INSERT INTO medico (nombre, apellidos, colegiado, especialidad, password_hash) VALUES
-('Dr. Carlos', 'Sánchez Ruiz', '313103795', 'Medicina General', '$2y$10$demo_hash_medico');
-*/
