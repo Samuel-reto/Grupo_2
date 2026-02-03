@@ -7,10 +7,9 @@ global $wpdb;
 // Constantes tablas
 define('H2Y_PACIENTE', 'paciente');
 define('H2Y_MEDICO', 'medico');
+define('H2Y_ADMINISTRATIVO', 'administrativo');
 define('H2Y_CITA', 'cita');
 define('H2Y_JUSTIFICANTE', 'justificante');
-define('H2Y_VISTA', 'vista_citas_completas');
-
 
 // Configuración de correo Gmail para 2FA
 define('SMTP_HOST', 'smtp.gmail.com');
