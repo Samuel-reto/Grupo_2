@@ -6,23 +6,23 @@ Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label:
-          default: "Configuración de Red y Seguridad"
+          default: "Configuraci?n de Red y Seguridad"
         Parameters:
           - KeyName
           - AdminWhitelistIPs
       - Label:
-          default: "Configuración de Base de Datos"
+          default: "Configuraci?n de Base de Datos"
         Parameters:
           - DBPassword
           - EnableRDSProxy
       - Label:
-          default: "Configuración de AMI"
+          default: "Configuraci?n de AMI"
         Parameters:
           - LatestAmiId
           - UseProductionAMI
           - ProductionAMI
       - Label:
-          default: "Configuración de Dominio"
+          default: "Configuraci?n de Dominio"
         Parameters:
           - DomainName
 
@@ -41,7 +41,7 @@ Parameters:
     Type: String
     NoEcho: true
     MinLength: 8
-    Description: Contraseña para RDS MySQL (minimo 8 caracteres)
+    Description: Contrase?a para RDS MySQL (minimo 8 caracteres)
     Default: WordpressDB2026
 
   EnableRDSProxy:
@@ -50,7 +50,7 @@ Parameters:
     AllowedValues:
       - "true"
       - "false"
-    Description: "Activar RDS Proxy para mejor gestión de conexiones y escalabilidad"
+    Description: "Activar RDS Proxy para mejor gesti?n de conexiones y escalabilidad"
 
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
@@ -80,7 +80,7 @@ Parameters:
     Description: Email para recibir reportes de monitoreo de WordPress
     Default: ""
     AllowedPattern: "^$|^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
-    ConstraintDescription: Debe ser una dirección de email válida o dejar vacío
+    ConstraintDescription: Debe ser una direcci?n de email v?lida o dejar vac?o
 
 Conditions:
   UseProductionAMICondition: !Equals [!Ref UseProductionAMI, "true"]
@@ -122,7 +122,7 @@ Resources:
       VpcId: !Ref VPC
       InternetGatewayId: !Ref InternetGateway
 
-  # Subnets Públicas
+  # Subnets P?blicas
   PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -648,7 +648,7 @@ Resources:
           apt-get update
           apt-get install -y powershell
           pwsh --version
-          echo "✓ PowerShell instalado correctamente"
+          echo "? PowerShell instalado correctamente"
           
           # ============================================
           # INSTALAR SSM AGENT
@@ -688,7 +688,7 @@ Resources:
           chmod +x Monitor-WordPressLogs.ps1
           
           # ============================================
-          # 🎯 NUEVO: DESCARGAR Y EJECUTAR datos.sh
+          # ? NUEVO: DESCARGAR Y EJECUTAR datos.sh
           # ============================================
           echo "=== Descargando datos.sh (CONFIG AUTO SNS/S3) ==="
           curl -o datos.sh "$GITHUB_REPO/datos.sh"
@@ -707,12 +707,12 @@ Resources:
           cat > /opt/wordpress-monitor/run-monitor.sh << 'EOFWRAPPER'
           #!/bin/bash
           source /opt/wordpress-monitor/config.env 2>/dev/null || {
-              echo "Error cargando config.env - datos.sh aún configurando..." >&2
+              echo "Error cargando config.env - datos.sh a?n configurando..." >&2
               exit 1
           }
           echo "=== $(date) ===" >> /var/log/wordpress-monitor.log
           /usr/bin/pwsh /opt/wordpress-monitor/Monitor-WordPressLogs.ps1 >> /var/log/wordpress-monitor.log 2>&1
-          echo "$(date): Monitor ejecutado ✓" >> /var/log/wordpress-monitor-cron.log
+          echo "$(date): Monitor ejecutado ?" >> /var/log/wordpress-monitor-cron.log
           EOFWRAPPER
           
           chmod +x /opt/wordpress-monitor/run-monitor.sh
@@ -726,9 +726,9 @@ Resources:
           # Configurar CRON
           (crontab -u ubuntu -l 2>/dev/null || true; echo "0 */6 * * * /opt/wordpress-monitor/run-monitor.sh >> /var/log/wordpress-monitor-cron.log 2>&1"; echo "0 8 * * * /opt/wordpress-monitor/run-monitor.sh >> /var/log/wordpress-monitor-cron.log 2>&1") | crontab -u ubuntu -
           
-          echo "✓ Tareas CRON configuradas (6h + 8AM)"
+          echo "? Tareas CRON configuradas (6h + 8AM)"
           
-          echo "🎉 BASTION + datos.sh + MONITOR CONFIGURADO AUTOMÁTICAMENTE $(date)"
+          echo "? BASTION + datos.sh + MONITOR CONFIGURADO AUTOM?TICAMENTE $(date)"
 
 
   # ============================================
@@ -841,9 +841,9 @@ Resources:
             date
 
             if ping -c 3 8.8.8.8 > /dev/null 2>&1; then
-              echo "✓ Internet connectivity OK"
+              echo "? Internet connectivity OK"
             else
-              echo "✗ ERROR: No Internet connectivity"
+              echo "? ERROR: No Internet connectivity"
               exit 1
             fi
 
@@ -894,10 +894,10 @@ Resources:
             sed -i "/DB_COLLATE/r /tmp/wp-keys.txt" /var/www/html/wp-config.php
 
             echo "=== Adding HTTPS configuration to wp-config.php ==="
-            # Insertar configuración HTTPS ANTES del comentario "That's all, stop editing!"
+            # Insertar configuraci?n HTTPS ANTES del comentario "That's all, stop editing!"
             sed -i "/\/\* That's all, stop editing! Happy publishing. \*\//i\\
             \\
-            \/\/ Configuración HTTPS detrás de ALB\\
+            \/\/ Configuraci?n HTTPS detr?s de ALB\\
             if (isset(\\\$_SERVER['HTTP_X_FORWARDED_PROTO']) && \\\$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {\\
                 \\\$_SERVER['HTTPS'] = 'on';\\
             }\\
@@ -941,17 +941,17 @@ Resources:
               --admin_email="admin@example.com" \
               --skip-email || echo "WordPress installation attempted"
 
-            echo "✓ WordPress installed in database - WordPress tables now exist"
+            echo "? WordPress installed in database - WordPress tables now exist"
 
             echo "=== Cloning GitHub repository to EFS ==="
             cd /var/www/html/wp-content/themes/
             git clone https://github.com/Samuel-reto/Grupo_2.git health2you || echo "Git clone failed"
 
             if [ -d "health2you" ]; then
-              echo "✓ Repository cloned successfully to /var/www/html/wp-content/themes/health2you"
+              echo "? Repository cloned successfully to /var/www/html/wp-content/themes/health2you"
               ls -la health2you/ | head -10
             else
-              echo "✗ WARNING: Repository not cloned"
+              echo "? WARNING: Repository not cloned"
             fi
 
             echo "=== Creating Health2You database ==="
@@ -963,21 +963,21 @@ Resources:
             if [ -f "/var/www/html/wp-content/themes/health2you/health2you.sql" ]; then
               echo "=== Importing Health2You database schema ==="
               mysql -h ${DatabaseEndpoint} -u admin -p${DBPassword} health2you < /var/www/html/wp-content/themes/health2you/health2you.sql
-              echo "✓ Database schema imported successfully"
+              echo "? Database schema imported successfully"
             else
-              echo "⚠ SQL file not found, skipping database import"
+              echo "? SQL file not found, skipping database import"
             fi
 
             if [ -f "/var/www/html/wp-content/themes/health2you/config.php" ]; then
               echo "=== Updating Health2You config.php with RDS credentials ==="
               sed -i "s/localhost/${DatabaseEndpoint}/" /var/www/html/wp-content/themes/health2you/config.php
-              echo "✓ Config.php updated"
+              echo "? Config.php updated"
             fi
 
             echo "=== NOW importing citas_medicas_MYSQL.sql to wordpress database ==="
-            echo "⚠ IMPORTANTE: WordPress ya está instalado, ahora solo agregamos tablas nuevas"
+            echo "? IMPORTANTE: WordPress ya est? instalado, ahora solo agregamos tablas nuevas"
             if [ -f "/var/www/html/wp-content/themes/health2you/citas_medicas_MYSQL.sql" ]; then
-              # Crear versión limpia del SQL sin comandos peligrosos
+              # Crear versi?n limpia del SQL sin comandos peligrosos
               grep -v "DROP DATABASE" /var/www/html/wp-content/themes/health2you/citas_medicas_MYSQL.sql | \
               grep -v "DROP TABLE" | \
               grep -v "CREATE DATABASE" | \
@@ -992,14 +992,14 @@ Resources:
               # Importar solo las tablas nuevas sin afectar WordPress
               mysql -h ${DatabaseEndpoint} -u admin -p${DBPassword} wordpress < /tmp/citas_medicas_safe.sql
               
-              # Verificar tablas después de importar
+              # Verificar tablas despu?s de importar
               ALL_TABLES=$(mysql -h ${DatabaseEndpoint} -u admin -p${DBPassword} -D wordpress -e "SHOW TABLES;" | wc -l)
-              echo "Total de tablas después de importar: $ALL_TABLES"
+              echo "Total de tablas despu?s de importar: $ALL_TABLES"
               
               rm -f /tmp/citas_medicas_safe.sql
-              echo "✓ citas_medicas_MYSQL.sql imported safely (new tables added, WordPress tables preserved)"
+              echo "? citas_medicas_MYSQL.sql imported safely (new tables added, WordPress tables preserved)"
             else
-              echo "⚠ citas_medicas_MYSQL.sql file not found, skipping import"
+              echo "? citas_medicas_MYSQL.sql file not found, skipping import"
             fi
 
             echo "=== Setting proper permissions for www-data ==="
@@ -1014,16 +1014,16 @@ Resources:
             chmod -R 755 tcpdf
             rm main.zip
             chown -R www-data:www-data tcpdf
-            echo "✓ TCPDF installed successfully"
+            echo "? TCPDF installed successfully"
 
             echo "=== Performing health check ==="
             sleep 10
             HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}" http://localhost/)
 
             if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ]; then
-              echo "✓ WordPress is ready - HTTP $HTTP_CODE"
+              echo "? WordPress is ready - HTTP $HTTP_CODE"
             else
-              echo "⚠ WARNING: Unexpected HTTP code $HTTP_CODE"
+              echo "? WARNING: Unexpected HTTP code $HTTP_CODE"
             fi
 
             echo "=== EFS Status ==="
@@ -1109,7 +1109,7 @@ Resources:
                 echo "=== Adding HTTPS configuration to wp-config.php ==="
                 sed -i "/\/\* That's all, stop editing! Happy publishing. \*\//i\\
                 \\
-                \/\/ Configuración HTTPS detrás de ALB\\
+                \/\/ Configuraci?n HTTPS detr?s de ALB\\
                 if (isset(\\\$_SERVER['HTTP_X_FORWARDED_PROTO']) && \\\$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {\\
                     \\\$_SERVER['HTTPS'] = 'on';\\
                 }\\
@@ -1170,11 +1170,11 @@ Resources:
 
                 echo "=== NOW importing citas_medicas_MYSQL.sql AFTER WordPress installation ==="
                 if [ -f "/var/www/html/wp-content/themes/health2you/citas_medicas_MYSQL.sql" ]; then
-                  # Verificar que WordPress está instalado
+                  # Verificar que WordPress est? instalado
                   WP_TABLES=$(mysql -h ${RDSInstance.Endpoint.Address} -u admin -p${DBPassword} -D wordpress -e "SHOW TABLES LIKE 'wp_%';" 2>/dev/null | wc -l)
                   echo "Tablas de WordPress encontradas: $WP_TABLES"
                   
-                  # Crear versión limpia del SQL sin comandos peligrosos
+                  # Crear versi?n limpia del SQL sin comandos peligrosos
                   grep -v "DROP DATABASE" /var/www/html/wp-content/themes/health2you/citas_medicas_MYSQL.sql | \
                   grep -v "DROP TABLE" | \
                   grep -v "CREATE DATABASE" | \
@@ -1186,9 +1186,9 @@ Resources:
                   mysql -h ${RDSInstance.Endpoint.Address} -u admin -p${DBPassword} wordpress < /tmp/citas_medicas_safe.sql || true
                   
                   rm -f /tmp/citas_medicas_safe.sql
-                  echo "✓ citas_medicas_MYSQL.sql imported safely (new tables added after WordPress)"
+                  echo "? citas_medicas_MYSQL.sql imported safely (new tables added after WordPress)"
                 else
-                  echo "⚠ citas_medicas_MYSQL.sql file not found"
+                  echo "? citas_medicas_MYSQL.sql file not found"
                 fi
 
                 chown -R www-data:www-data /var/www/html
@@ -1202,7 +1202,7 @@ Resources:
                 chmod -R 755 tcpdf
                 rm main.zip
                 chown -R www-data:www-data tcpdf
-                echo "✓ TCPDF installed successfully"
+                echo "? TCPDF installed successfully"
               fi
 
             else
@@ -1221,9 +1221,9 @@ Resources:
                 chmod -R 755 tcpdf
                 rm main.zip
                 chown -R www-data:www-data tcpdf
-                echo "✓ TCPDF installed successfully"
+                echo "? TCPDF installed successfully"
               else
-                echo "✓ TCPDF already installed"
+                echo "? TCPDF already installed"
               fi
               
               systemctl restart apache2
@@ -1339,7 +1339,7 @@ Resources:
                   results['rds'] = {'success': False, 'error': str(e)}
                   print(f"RDS ERROR: {e}")
 
-              # Backup EC2 - Obtener instancias del ASG dinámicamente
+              # Backup EC2 - Obtener instancias del ASG din?micamente
               ami_count = 0
               try:
                   asg_response = asg.describe_auto_scaling_groups(
@@ -1601,7 +1601,7 @@ Resources:
       WebACLArn: !GetAtt WAFWebACL.Arn
 
   # ============================================
-  # ACM Certificate (Validación DNS MANUAL)
+  # ACM Certificate (Validaci?n DNS MANUAL)
   # ============================================
   SSLCertificate:
     Type: AWS::CertificateManager::Certificate
@@ -1652,7 +1652,7 @@ Outputs:
     Value: !GetAtt ApplicationLoadBalancer.DNSName
 
   BastionPublicIP:
-    Description: IP pública del Bastion Host
+    Description: IP p?blica del Bastion Host
     Value: !GetAtt BastionInstance.PublicIp
 
   SSHConnectionCommand:
@@ -1669,7 +1669,7 @@ Outputs:
     Value: !GetAtt RDSProxy.Endpoint
 
   DatabaseEndpointUsed:
-    Description: Endpoint que está usando WordPress actualmente
+    Description: Endpoint que est? usando WordPress actualmente
     Value: !If
       - EnableRDSProxyCondition
       - !Sub '${RDSProxy.Endpoint} (RDS Proxy ACTIVADO)'
@@ -1679,8 +1679,8 @@ Outputs:
     Description: Estado del RDS Proxy
     Value: !If
       - EnableRDSProxyCondition
-      - '✅ ACTIVADO - WordPress usa conexión pooling para mejor rendimiento'
-      - '❌ DESACTIVADO - WordPress se conecta directamente a RDS'
+      - '? ACTIVADO - WordPress usa conexi?n pooling para mejor rendimiento'
+      - '? DESACTIVADO - WordPress se conecta directamente a RDS'
 
   EFSFileSystemId:
     Description: ID del sistema de archivos EFS
@@ -1707,11 +1707,11 @@ Outputs:
     Value: !Ref InitialWebServer
 
   BackupLambdaFunctionName:
-    Description: Nombre de la función Lambda de backups
+    Description: Nombre de la funci?n Lambda de backups
     Value: !Ref BackupLambdaFunction
 
   BackupSchedule:
-    Description: Programación de backups automáticos
+    Description: Programaci?n de backups autom?ticos
     Value: Diario a las 3:00 AM UTC (cron 0 3 * * ? *)
 
   CertificateArn:
@@ -1720,7 +1720,7 @@ Outputs:
 
   SSLValidationInstructions:
     Description: Pasos para validar SSL
-    Value: "1) Ve a AWS Console > Certificate Manager. 2) Copia los registros CNAME. 3) Añádelos en tu DNS."
+    Value: "1) Ve a AWS Console > Certificate Manager. 2) Copia los registros CNAME. 3) A??delos en tu DNS."
 
   WAFWebACLArn:
     Description: ARN del WAF Web ACL
@@ -1731,11 +1731,11 @@ Outputs:
     Value: !GetAtt AdminIPSet.Arn
 
   AdminWhitelistInfo:
-    Description: Información sobre protección de wp-admin
+    Description: Informaci?n sobre protecci?n de wp-admin
     Value: !Sub 'Solo las IPs en AdminWhitelistIPs (${AWS::StackName}-AdminWhitelist) pueden acceder a /wp-admin'
 
   HTTPSLoadBalancerURL:
-    Description: URL HTTPS del ALB (después de validar certificado)
+    Description: URL HTTPS del ALB (despu?s de validar certificado)
     Value: !Sub 'https://${ApplicationLoadBalancer.DNSName}'
 
   WordPressURL:
@@ -1743,19 +1743,19 @@ Outputs:
     Value: !Sub 'http://${ApplicationLoadBalancer.DNSName}/'
 
   Health2YouURL:
-    Description: URL de la aplicación Health2You
+    Description: URL de la aplicaci?n Health2You
     Value: !Sub 'http://${ApplicationLoadBalancer.DNSName}/wp-content/themes/health2you/'
 
   CurrentAMIMode:
     Description: Modo actual de AMI
     Value: !If
       - UseProductionAMICondition
-      - 'PRODUCCIÓN (AMI personalizada)'
-      - 'BASE (Ubuntu + instalación automática)'
+      - 'PRODUCCI?N (AMI personalizada)'
+      - 'BASE (Ubuntu + instalaci?n autom?tica)'
 
   DatabaseInfo:
-    Description: Información de bases de datos creadas
-    Value: 'wordpress (WordPress CMS) + health2you (aplicación Health2You)'
+    Description: Informaci?n de bases de datos creadas
+    Value: 'wordpress (WordPress CMS) + health2you (aplicaci?n Health2You)'
 
   MonitoringSNSTopicArn:
     Description: "ARN del SNS Topic para monitoreo"
@@ -1767,30 +1767,30 @@ Outputs:
     Description: Estado de las notificaciones por email
     Value: !If
       - CreateMonitoringNotifications
-      - !Sub 'Email configurado: ${MonitoringEmail}. IMPORTANTE: Revisa tu email y confirma la suscripción.'
-      - 'Email no configurado. Los reportes se guardarán en /tmp/ del Bastion.'
+      - !Sub 'Email configurado: ${MonitoringEmail}. IMPORTANTE: Revisa tu email y confirma la suscripci?n.'
+      - 'Email no configurado. Los reportes se guardar?n en /tmp/ del Bastion.'
 
   MonitoringInstructions:
     Description: Instrucciones para acceder a los reportes
     Value: !If
       - CreateMonitoringNotifications
-      - 'Los reportes se envían automáticamente por email cada 6 horas y diariamente a las 8:00 AM'
-      - 'Conéctate al Bastion y ejecuta: ls /tmp/wordpress-report-*.html'
+      - 'Los reportes se env?an autom?ticamente por email cada 6 horas y diariamente a las 8:00 AM'
+      - 'Con?ctate al Bastion y ejecuta: ls /tmp/wordpress-report-*.html'
 
   DeploymentSummary:
     Description: Resumen del despliegue
     Value: !Sub
       - |
-        ✅ INFRAESTRUCTURA COMPLETA DESPLEGADA
-        🔹 RDS Proxy: ${ProxyStatus}
-        🔹 WAF IP Whitelist: Activado para /wp-admin
-        🔹 Auto Scaling: 2-6 instancias (actual: 3)
-        🔹 Backups automáticos: Diarios 3:00 AM UTC
-        🔹 EFS: Almacenamiento compartido
-        🔹 SSL: Pendiente validación DNS
-        🌐 Accede a: http://${ApplicationLoadBalancer.DNSName}
-        🔐 Configura tu IP en AdminWhitelistIPs para acceder a wp-admin
+        ? INFRAESTRUCTURA COMPLETA DESPLEGADA
+        ? RDS Proxy: ${ProxyStatus}
+        ? WAF IP Whitelist: Activado para /wp-admin
+        ? Auto Scaling: 2-6 instancias (actual: 3)
+        ? Backups autom?ticos: Diarios 3:00 AM UTC
+        ? EFS: Almacenamiento compartido
+        ? SSL: Pendiente validaci?n DNS
+        ? Accede a: http://${ApplicationLoadBalancer.DNSName}
+        ? Configura tu IP en AdminWhitelistIPs para acceder a wp-admin
       - ProxyStatus: !If
           - EnableRDSProxyCondition
-          - 'ACTIVADO ✅'
-          - 'DESACTIVADO ❌'
+          - 'ACTIVADO ?'
+          - 'DESACTIVADO ?'
