@@ -49,6 +49,7 @@ CREATE TABLE cita (
   paciente_id INT NOT NULL,
   medico_id INT NOT NULL,
   administrativo_id INT NULL,
+  sintomas TEXT NULL,
   fecha_hora_inicio DATETIME NOT NULL,
   fecha_hora_fin DATETIME NOT NULL,
   estado VARCHAR(20) DEFAULT 'pendiente',
