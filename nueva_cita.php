@@ -1,7 +1,6 @@
-
 <?php
 /**
- * Health2You - Nueva cita con síntomas y selección de médico
+ * Health2You - Nueva cita con síntomas, selección de médico y botón de urgencia
  */
 
 if (!defined('ABSPATH')) {
@@ -103,7 +102,7 @@ if (isset($_GET['h2y_api']) && $_GET['h2y_api'] === '1') {
 
     // Obtener médico desde la petición o usar el primero
     $medico_id_api = isset($data['medico_id']) ? (int)$data['medico_id'] : $medico_defecto->medico_id;
-    
+
     if ($accion === 'buscar_urgente') {
         $slot = h2y_primer_hueco_urgente($wpdb, $medico_id_api, 30);
         echo json_encode(['status' => 'ok', 'slot' => $slot]);
@@ -167,7 +166,7 @@ if (isset($_GET['h2y_api']) && $_GET['h2y_api'] === '1') {
 
         // Insertar con manejo de errores mejorado
         $resultado = $wpdb->insert(
-            H2Y_CITA, 
+            H2Y_CITA,
             [
                 'paciente_id' => $paciente_id,
                 'medico_id' => $medico_id_api,
@@ -325,6 +324,44 @@ if (h2y_es_dia_valido($fecha_sel)) {
             border-color: #00796b;
             background: #e0f2f1;
         }
+
+        /* Estilos para el botón de urgencia */
+        .urgencia-box {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ff5252 100%);
+            border-radius: 12px;
+            padding: 20px;
+            margin: 24px 0;
+            box-shadow: 0 4px 15px rgba(255, 82, 82, 0.3);
+            animation: pulseUrgent 2s infinite;
+        }
+
+        @keyframes pulseUrgent {
+            0%, 100% {
+                box-shadow: 0 4px 15px rgba(255, 82, 82, 0.3);
+            }
+            50% {
+                box-shadow: 0 4px 25px rgba(255, 82, 82, 0.6);
+            }
+        }
+
+        .btn-urgente {
+            background: white;
+            color: #ff5252;
+            font-weight: bold;
+            padding: 12px 24px;
+            border-radius: 8px;
+            text-decoration: none;
+            display: inline-block;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            transition: all 0.3s;
+            border: none;
+        }
+
+        .btn-urgente:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+            background: #fff;
+        }
     </style>
 </head>
 <body>
@@ -341,6 +378,26 @@ if (h2y_es_dia_valido($fecha_sel)) {
         <div class="logo"><span>🗓️ Nueva cita</span></div>
         <h1>Reserva tu cita</h1>
         <p class="tagline">Selecciona médico, fecha y hora. También puedes usar el chatbot (botón flotante).</p>
+
+        <!-- BOTÓN DE CITA URGENTE -->
+        <div class="urgencia-box">
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px;">
+                <div style="flex: 1; min-width: 250px;">
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                        <span style="font-size: 28px;">🚨</span>
+                        <strong style="color: white; font-size: 18px;">¿Necesitas atención urgente?</strong>
+                    </div>
+                    <p style="margin: 0; color: rgba(255,255,255,0.95); font-size: 14px; line-height: 1.5;">
+                        Accede al sistema de triaje para evaluar tu situación y obtener orientación médica inmediata
+                    </p>
+                </div>
+                <div>
+                    <a href="<?= get_stylesheet_directory_uri(); ?>/final.html" class="btn-urgente">
+                        ⚡ Ir a Triaje Urgente
+                    </a>
+                </div>
+            </div>
+        </div>
 
         <?php if (!empty($mensaje)): ?>
             <div class="alert alert-<?= $tipo_mensaje; ?>"><?= htmlspecialchars($mensaje); ?></div>
@@ -393,7 +450,7 @@ if (h2y_es_dia_valido($fecha_sel)) {
 
                     <div class="form-group" id="sintomasGroup" style="display:none;">
                         <label for="sintomas"><strong>4. Describe tus síntomas</strong> (opcional)</label>
-                        <textarea name="sintomas" id="sintomas" rows="4" 
+                        <textarea name="sintomas" id="sintomas" rows="4"
                                   style="width:100%; padding:10px; border:1px solid #ccc; border-radius:4px;"
                                   placeholder="Describe brevemente tus síntomas o motivo de la consulta. Ejemplo: Dolor de cabeza persistente desde hace 3 días, fiebre..."></textarea>
                         <small class="small-muted">Esta información ayudará al médico a prepararse mejor para tu consulta.</small>
@@ -452,7 +509,7 @@ function cambiarMedico() {
     const select = document.getElementById('selectMedico');
     const medicoId = select.value;
     document.getElementById('medicoIdHidden').value = medicoId;
-    
+
     // Actualizar URL con nuevo médico
     const url = new URL(window.location.href);
     url.searchParams.set('medico_id', medicoId);
@@ -587,22 +644,22 @@ async function api(datos) {
     try {
         // Siempre incluir el medico_id actual
         datos.medico_id = medicoIdActual;
-        
+
         console.log('API REQUEST:', datos);
         const r = await fetch(apiUrl, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(datos)
         });
-        
+
         console.log('API RESPONSE STATUS:', r.status);
-        
+
         if (!r.ok) {
             const errorText = await r.text();
             console.error('API ERROR TEXT:', errorText);
             throw new Error('Error HTTP: ' + r.status);
         }
-        
+
         const result = await r.json();
         console.log('API RESPONSE JSON:', result);
         return result;
@@ -639,7 +696,7 @@ function sendMessage() {
 // CEREBRO CON DEBUG MEJORADO
 async function cerebroBot(texto) {
     console.log('PASO ACTUAL:', paso, 'TEXTO:', texto);
-    
+
     // Sanitización básica
     const txt = texto.toLowerCase().replace(/<script.*?<\/script>/gi, '').substring(0, 500);
 
@@ -660,7 +717,7 @@ async function cerebroBot(texto) {
         botTalk('Buscando el primer hueco disponible...');
         const r = await api({accion:'buscar_urgente'});
         console.log('URGENTE RESPONSE:', r);
-        
+
         if (r.status === 'ok' && r.slot) {
             const fecha = r.slot.fecha;
             const hora = r.slot.hora;
@@ -725,10 +782,10 @@ async function cerebroBot(texto) {
 
             console.log('CONSULTANDO HUECOS:', fecha);
             botTalk(`Consultando huecos para ${fecha}...`);
-            
+
             const r = await api({accion:'buscar_huecos', fecha});
             console.log('HUECOS RESPONSE:', r);
-            
+
             if (r.status === 'ok' && Array.isArray(r.huecos) && r.huecos.length > 0) {
                 cita.dia = dia;
                 huecosDia = r.huecos;
@@ -745,9 +802,9 @@ async function cerebroBot(texto) {
             let hora = null;
             const mm = txt.match(/\d{1,2}:?\d{2}/);
             if (mm) hora = normalizarHora(mm[0]);
-            
+
             console.log('HORA INGRESADA:', txt, 'NORMALIZADA:', hora, 'HUECOS:', huecosDia);
-            
+
             if (!hora) { botTalk('Hora inválida. Ej: 09:30 o 0930'); return; }
             if (!huecosDia.includes(hora)) {
                 botTalk(`La hora <strong>${hora}</strong> ya está ocupada. Prueba otra.`);
@@ -786,7 +843,7 @@ async function cerebroBot(texto) {
 
                 console.log('GUARDANDO CITA:', {fecha, hora: cita.hora, sintomas: cita.sintomas});
                 botTalk('Confirmando tu cita...');
-                
+
                 const r = await api({accion:'guardar_cita', fecha, hora: cita.hora, sintomas: cita.sintomas});
                 console.log('GUARDAR RESPONSE:', r);
 
