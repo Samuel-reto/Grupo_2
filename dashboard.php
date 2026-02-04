@@ -70,12 +70,13 @@ if ($tipo_usuario === 'paciente') {
 
     // Citas de hoy
     $citas_hoy = $wpdb->get_results($wpdb->prepare("
-        SELECT c.*, CONCAT(m.nombre, ' ', m.apellidos) AS medico_nombre
-        FROM " . H2Y_CITA . " c
-        JOIN " . H2Y_MEDICO . " m ON c.medico_id = m.medico_id
-        WHERE c.paciente_id = %d
-          AND DATE(c.fecha_hora_inicio) = %s
-        ORDER BY c.fecha_hora_inicio ASC
+    SELECT c.*, CONCAT(m.nombre, ' ', m.apellidos) AS medico_nombre, p.email
+    FROM " . H2Y_CITA . " c
+    JOIN " . H2Y_MEDICO . " m ON c.medico_id = m.medico_id
+    JOIN " . H2Y_PACIENTE . " p ON c.paciente_id = p.paciente_id
+    WHERE c.paciente_id = %d
+      AND DATE(c.fecha_hora_inicio) = %s
+    ORDER BY c.fecha_hora_inicio ASC
     ", $paciente_id, $hoy));
 
     // Historial (pasadas)
@@ -95,7 +96,7 @@ if ($tipo_usuario === 'paciente') {
 
     // 1. Citas de hoy (SIN JOIN primero para evitar pérdida de datos)
     $citas_hoy_raw = $wpdb->get_results($wpdb->prepare("
-        SELECT * FROM " . H2Y_CITA . " 
+        SELECT * FROM " . H2Y_CITA . "
         WHERE medico_id = %d AND fecha_hora_inicio >= %s AND fecha_hora_inicio <= %s
         ORDER BY fecha_hora_inicio ASC
     ", $medico_id, $hoy_inicio, $hoy_fin));
@@ -104,27 +105,27 @@ if ($tipo_usuario === 'paciente') {
     $citas_hoy = [];
     foreach ($citas_hoy_raw as $cita) {
         $paciente = $wpdb->get_row($wpdb->prepare(
-            "SELECT nombre, apellidos, telefono, numero_tsi FROM " . H2Y_PACIENTE . " WHERE paciente_id = %d", 
+            "SELECT nombre, apellidos, telefono, numero_tsi FROM " . H2Y_PACIENTE . " WHERE paciente_id = %d",
             $cita->paciente_id
         ));
-        
+
         // Asignamos las variables que espera el HTML del Código 1
-        $cita->paciente_nombre = $paciente 
-            ? trim($paciente->nombre . ' ' . $paciente->apellidos) 
+        $cita->paciente_nombre = $paciente
+            ? trim($paciente->nombre . ' ' . $paciente->apellidos)
             : "Paciente ID: {$cita->paciente_id} (No encontrado)";
         $cita->telefono = $paciente->telefono ?? 'No disponible';
         $cita->numero_tsi = $paciente->numero_tsi ?? 'N/A';
-        
+
         $citas_hoy[] = $cita;
     }
 
     // 3. Próximas citas (siguientes 7 días) con la lógica robusta
     $manana_inicio = date('Y-m-d 00:00:00', strtotime('+1 day'));
     $fecha_limite = date('Y-m-d 23:59:59', strtotime('+7 days'));
-    
+
     $proximas_raw = $wpdb->get_results($wpdb->prepare("
-        SELECT * FROM " . H2Y_CITA . " 
-        WHERE medico_id = %d AND estado = 'pendiente' 
+        SELECT * FROM " . H2Y_CITA . "
+        WHERE medico_id = %d AND estado = 'pendiente'
         AND fecha_hora_inicio >= %s AND fecha_hora_inicio <= %s
         ORDER BY fecha_hora_inicio ASC
     ", $medico_id, $manana_inicio, $fecha_limite));
@@ -132,25 +133,25 @@ if ($tipo_usuario === 'paciente') {
     $proximas_citas = [];
     foreach ($proximas_raw as $cita) {
         $paciente = $wpdb->get_row($wpdb->prepare(
-            "SELECT nombre, apellidos, telefono FROM " . H2Y_PACIENTE . " WHERE paciente_id = %d", 
+            "SELECT nombre, apellidos, telefono FROM " . H2Y_PACIENTE . " WHERE paciente_id = %d",
             $cita->paciente_id
         ));
-        
-        $cita->paciente_nombre = $paciente 
-            ? trim($paciente->nombre . ' ' . $paciente->apellidos) 
+
+        $cita->paciente_nombre = $paciente
+            ? trim($paciente->nombre . ' ' . $paciente->apellidos)
             : "Paciente ID: {$cita->paciente_id}";
         $cita->telefono = $paciente->telefono ?? 'No disponible';
-        
+
         $proximas_citas[] = $cita;
     }
 
     // 4. Estadísticas
     $total_citas_hoy = count($citas_hoy);
     $pendientes_hoy = count(array_filter($citas_hoy, function($c) { return $c->estado === 'pendiente'; }));
-    
+
     // Total citas generales (del código 1, útil para mensaje vacío)
     $total_citas_medico = $wpdb->get_var($wpdb->prepare(
-        "SELECT COUNT(*) FROM " . H2Y_CITA . " WHERE medico_id = %d", 
+        "SELECT COUNT(*) FROM " . H2Y_CITA . " WHERE medico_id = %d",
         $medico_id
     ));
 
@@ -163,7 +164,7 @@ if ($tipo_usuario === 'paciente') {
     // 5. Procesar acciones (marcar como asistida)
     if (isset($_GET['accion']) && $_GET['accion'] === 'asistida' && isset($_GET['cita_id'])) {
         $cita_id = intval($_GET['cita_id']);
-        
+
         $resultado = $wpdb->update(
             H2Y_CITA,
             ['estado' => 'asistida'],
@@ -171,7 +172,7 @@ if ($tipo_usuario === 'paciente') {
             ['%s'],
             ['%d']
         );
-            
+
         header("Location: " . get_stylesheet_directory_uri() . '/dashboard.php?success=asistida');
         exit;
     }
@@ -414,12 +415,14 @@ if ($tipo_usuario === 'medico') {
                         </td>
                         <td>
                             <?php if ($c->estado === 'asistida'): ?>
-                                <a href="<?php echo get_stylesheet_directory_uri(); ?>/justificante.php?cita_id=<?php echo (int)$c->cita_id; ?>"
-                                   class="btn btn-success" style="padding:4px 8px;font-size:12px;" target="_blank">
+                                <a href="<?= get_stylesheet_directory_uri(); ?>/justificante.php?cita_id=<?= $c->cita_id ?>"
+                                class="btn btn-success" style="padding:4px 8px;font-size:12px;" target="_blank">
                                     📄 Descargar
                                 </a>
-                            <?php elseif ($c->estado === 'pendiente'): ?>
-                                <span style="color:#999;font-size:12px;">Disponible tras la consulta</span>
+                                <button onclick="abrirModalEmail(<?= $c->cita_id ?>, '<?= $c->email ?>')"
+                                        class="btn btn-secondary" style="padding:4px 8px;font-size:12px;">
+                                    📧 Enviar
+                                </button>
                             <?php endif; ?>
                         </td>
                     </tr>
@@ -524,9 +527,9 @@ if ($tipo_usuario === 'medico') {
                             <td><?= htmlspecialchars($c->telefono ?: '-') ?></td>
                             <td class="sintomas-cell">
                                 <?php if (!empty($c->sintomas) && strlen($c->sintomas) > 2): ?>
-                                    <?php 
-                                    $sintomas_corto = mb_strlen($c->sintomas) > 50 
-                                            ? mb_substr($c->sintomas, 0, 50) . '...' 
+                                    <?php
+                                    $sintomas_corto = mb_strlen($c->sintomas) > 50
+                                            ? mb_substr($c->sintomas, 0, 50) . '...'
                                             : $c->sintomas;
                                     ?>
                                     <div class="sintomas-expandible" onclick="toggleSintomas(this)">
@@ -619,6 +622,9 @@ if ($tipo_usuario === 'medico') {
         <?php endif; ?>
 
     <?php else: ?>
+<div class="filter-row" style="margin-bottom: 24px;">
+        <a href="<?php echo get_stylesheet_directory_uri(); ?>/cita_administrativo.php" class="btn">➕ Nueva cita</a>
+    </div>
         <div class="stats-grid">
             <div class="stat-card">
                 <p>Citas hoy</p>
@@ -694,7 +700,7 @@ if ($tipo_usuario === 'medico') {
     function toggleSintomas(element) {
         var full = element.querySelector('.sintomas-full');
         var preview = element.querySelector('.sintomas-preview');
-        
+
         if (full) {
             if (full.style.display === 'block') {
                 full.style.display = 'none';
@@ -705,7 +711,55 @@ if ($tipo_usuario === 'medico') {
             }
         }
     }
+    function abrirModalEmail(citaId, email) {
+    document.getElementById('citaIdActual').value = citaId;
+    document.getElementById('emailDestino').value = email;
+    document.getElementById('modalAlert').innerHTML = '';
+    document.getElementById('emailModal').style.display = 'block';
+}
+
+function cerrarModalEmail() {
+    document.getElementById('emailModal').style.display = 'none';
+}
+
+async function enviarJustificante() {
+    const citaId = document.getElementById('citaIdActual').value;
+    const email = document.getElementById('emailDestino').value;
+    const alertDiv = document.getElementById('modalAlert');
+    alertDiv.innerHTML = 'Enviando...';
+
+    try {
+        const resp = await fetch('<?= get_stylesheet_directory_uri(); ?>/enviar_justificante.php', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({cita_id: citaId, email})
+        });
+        const data = await resp.json();
+        if (data.success) {
+            alertDiv.innerHTML = '<span style="color:green;">✅ Justificante enviado correctamente</span>';
+        } else {
+            alertDiv.innerHTML = '<span style="color:red;">❌ Error: '+data.message+'</span>';
+        }
+    } catch(e) {
+        alertDiv.innerHTML = '<span style="color:red;">❌ Error de conexión</span>';
+    }
+}
+
 </script>
+<!-- Modal envío justificante -->
+    <div id="emailModal" class="modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:999;">
+        <div class="modal-content" style="background:#fff;margin:10% auto;padding:20px;border-radius:8px;max-width:400px;">
+            <h4>Enviar justificante</h4>
+            <p>Email de destino:</p>
+            <input type="email" id="emailDestino" style="width:100%;padding:10px;margin-bottom:15px;border:1px solid #ccc;border-radius:5px;">
+            <input type="hidden" id="citaIdActual">
+            <div id="modalAlert"></div>
+            <div style="text-align:right;">
+                <button onclick="cerrarModalEmail()" class="btn btn-secondary" style="margin-right:8px;">Cancelar</button>
+                <button onclick="enviarJustificante()" class="btn btn-success">Enviar</button>
+            </div>
+        </div>
+    </div>
 
 </body>
 </html>
