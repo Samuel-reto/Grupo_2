@@ -992,6 +992,9 @@ if ($tipo_usuario === 'medico') {
         <?php endif; ?>
 
     <?php else: ?>
+<div class="filter-row" style="margin-bottom: 24px;">
+        <a href="<?php echo get_stylesheet_directory_uri(); ?>/cita_administrativo.php" class="btn">➕ Nueva cita</a>
+    </div>
         <div class="stats-grid">
             <div class="stat-card">
                 <p>Citas hoy</p>
