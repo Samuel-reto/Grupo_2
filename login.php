@@ -267,6 +267,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <title>🔐 Login - Health2You</title>
     <link rel="stylesheet" href="<?php echo get_stylesheet_directory_uri(); ?>/styles.css">
     <?php wp_head(); ?>
+
+       <!-- PWA Health2You -->
+<link rel="manifest" href="<?= get_stylesheet_directory_uri(); ?>/manifest.json">
+<meta name="theme-color" content="#0f9d58">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Health2You">
+<link rel="apple-touch-icon" href="<?= get_stylesheet_directory_uri(); ?>/icon-192.png">
+
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function() {
+    navigator.serviceWorker.register('<?= get_stylesheet_directory_uri(); ?>/sw.js')
+    .then(function(registration) {
+      console.log('PWA ServiceWorker registrado correctamente');
+    }).catch(function(error) {
+      console.log('Error al registrar PWA ServiceWorker:', error);
+    });
+  });
+}
+</script>
+   
 </head>
 <body>
 
@@ -381,3 +403,4 @@ document.addEventListener('DOMContentLoaded', function() {
 <?php wp_footer(); ?>
 </body>
 </html>
+
