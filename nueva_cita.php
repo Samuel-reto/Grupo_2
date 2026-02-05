@@ -380,25 +380,24 @@ if (h2y_es_dia_valido($fecha_sel)) {
         <p class="tagline">Selecciona médico, fecha y hora. También puedes usar el chatbot (botón flotante).</p>
 
         <!-- BOTÓN DE CITA URGENTE -->
-        <div class="urgencia-box">
-            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px;">
-                <div style="flex: 1; min-width: 250px;">
-                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
-                        <span style="font-size: 28px;">🚨</span>
-                        <strong style="color: white; font-size: 18px;">¿Necesitas atención urgente?</strong>
-                    </div>
-                    <p style="margin: 0; color: rgba(255,255,255,0.95); font-size: 14px; line-height: 1.5;">
-                        Accede al sistema de triaje para evaluar tu situación y obtener orientación médica inmediata
-                    </p>
-                </div>
-                <div>
-                    <a href="<?= get_stylesheet_directory_uri(); ?>/final.html" class="btn-urgente">
-                        ⚡ Ir a Triaje Urgente
-                    </a>
-                </div>
+	<div class="urgencia-box">
+    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px;">
+        <div style="flex: 1; min-width: 250px;">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                <span style="font-size: 28px;">🚨</span>
+                <strong style="color: white; font-size: 18px;">¿Necesitas atención urgente?</strong>
             </div>
+            <p style="margin: 0; color: rgba(255,255,255,0.95); font-size: 14px; line-height: 1.5;">
+                Solicita una videollamada inmediata con un médico de urgencias disponible
+            </p>
         </div>
-
+        <div>
+            <a href="<?= get_stylesheet_directory_uri(); ?>/solicitar_videollamada.php" class="btn-urgente">
+                📞 Solicitar Videollamada Urgente
+            </a>
+        </div>
+    	</div>
+	</div>
         <?php if (!empty($mensaje)): ?>
             <div class="alert alert-<?= $tipo_mensaje; ?>"><?= htmlspecialchars($mensaje); ?></div>
         <?php endif; ?>

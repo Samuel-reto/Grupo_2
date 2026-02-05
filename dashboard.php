@@ -1,374 +1,4 @@
 <?php
-/**
- * Health2You - Enviar Justificante por Email
- * Versión usando PHPMailer con SMTP (igual que el 2FA)
- */
-
-if (!defined('ABSPATH')) {
-    require_once('../../../wp-load.php');
-}
-
-if (!session_id()) session_start();
-
-header('Content-Type: application/json; charset=utf-8');
-
-global $wpdb;
-require_once get_stylesheet_directory() . '/config.php';
-
-// Cargar PHPMailer (igual que login.php)
-$autoload_path = get_stylesheet_directory() . '/vendor/autoload.php';
-if (file_exists($autoload_path)) {
-    require_once $autoload_path;
-} else {
-    require_once ABSPATH . WPINC . '/PHPMailer/Exception.php';
-    require_once ABSPATH . WPINC . '/PHPMailer/PHPMailer.php';
-    require_once ABSPATH . WPINC . '/PHPMailer/SMTP.php';
-}
-
-use PHPMailer\PHPMailer\PHPMailer;
-use PHPMailer\PHPMailer\Exception;
-use PHPMailer\PHPMailer\SMTP;
-
-// DEBUG: Log de inicio
-error_log("==========================================");
-error_log("=== INICIO ENVIAR JUSTIFICANTE ===");
-error_log("==========================================");
-
-// Definir constantes si no existen
-if (!defined('H2Y_CITA')) {
-    define('H2Y_CITA', $wpdb->prefix . 'h2y_cita');
-}
-if (!defined('H2Y_MEDICO')) {
-    define('H2Y_MEDICO', $wpdb->prefix . 'h2y_medico');
-}
-if (!defined('H2Y_PACIENTE')) {
-    define('H2Y_PACIENTE', $wpdb->prefix . 'h2y_paciente');
-}
-
-// Seguridad - verificar tipo de usuario
-if (!isset($_SESSION['h2y_tipo']) || $_SESSION['h2y_tipo'] !== 'paciente') {
-    error_log("❌ Error: Tipo de usuario no válido");
-    echo json_encode(['success' => false, 'message' => 'Acceso no autorizado']);
-    exit;
-}
-
-// Obtener ID del paciente de la sesión
-$paciente_id_session = $_SESSION['h2y_user_id'] ?? 0;
-error_log("✓ ID Paciente de sesión: " . $paciente_id_session);
-
-if (!$paciente_id_session) {
-    error_log("❌ Error: No hay ID de paciente en sesión");
-    echo json_encode(['success' => false, 'message' => 'Sesión inválida']);
-    exit;
-}
-
-// Verificar que sea POST
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    error_log("❌ Error: Método no permitido");
-    echo json_encode(['success' => false, 'message' => 'Método no permitido']);
-    exit;
-}
-
-// Leer datos JSON del request
-$raw_input = file_get_contents('php://input');
-$input = json_decode($raw_input, true);
-
-$cita_id = (int)($input['cita_id'] ?? 0);
-$email_destino = sanitize_email($input['email'] ?? '');
-
-error_log("✓ Cita ID: $cita_id");
-error_log("✓ Email destino: $email_destino");
-
-if ($cita_id <= 0) {
-    error_log("❌ Error: ID de cita inválido");
-    echo json_encode(['success' => false, 'message' => 'ID de cita inválido']);
-    exit;
-}
-
-if (!is_email($email_destino)) {
-    error_log("❌ Error: Email inválido");
-    echo json_encode(['success' => false, 'message' => 'Email inválido']);
-    exit;
-}
-
-// Query sin numero_colegiado (campo que no existe)
-$query = "
-    SELECT
-        c.cita_id,
-        c.paciente_id,
-        c.medico_id,
-        c.fecha_hora_inicio,
-        c.fecha_hora_fin,
-        c.estado,
-        c.sintomas,
-        m.nombre as medico_nombre,
-        m.apellidos as medico_apellidos,
-        m.especialidad,
-        p.nombre as paciente_nombre,
-        p.apellidos as paciente_apellidos,
-        p.numero_tsi,
-        p.email as paciente_email
-    FROM " . H2Y_CITA . " c
-    LEFT JOIN " . H2Y_MEDICO . " m ON c.medico_id = m.medico_id
-    LEFT JOIN " . H2Y_PACIENTE . " p ON c.paciente_id = p.paciente_id
-    WHERE c.cita_id = %d
-";
-
-$cita = $wpdb->get_row($wpdb->prepare($query, $cita_id));
-
-if ($wpdb->last_error) {
-    error_log("❌ Error MySQL: " . $wpdb->last_error);
-    echo json_encode(['success' => false, 'message' => 'Error de base de datos: ' . $wpdb->last_error]);
-    exit;
-}
-
-if (!$cita) {
-    error_log("❌ Error: Cita no encontrada");
-    echo json_encode(['success' => false, 'message' => 'Cita no encontrada']);
-    exit;
-}
-
-// Verificar pertenencia
-if ((int)$cita->paciente_id !== (int)$paciente_id_session) {
-    error_log("❌ Error de seguridad: La cita no pertenece al paciente actual");
-    echo json_encode(['success' => false, 'message' => 'No tienes permiso para acceder a esta cita']);
-    exit;
-}
-
-// Verificar estado
-if ($cita->estado !== 'asistida') {
-    error_log("⚠️ Advertencia: Cita no asistida - Estado: " . $cita->estado);
-    echo json_encode([
-        'success' => false,
-        'message' => 'Solo se pueden enviar justificantes de citas asistidas. Estado actual: ' . $cita->estado
-    ]);
-    exit;
-}
-
-error_log("✓ Todas las verificaciones pasadas. Generando email...");
-
-// Construir nombres completos
-$medico_nombre_completo = trim(($cita->medico_nombre ?? '') . ' ' . ($cita->medico_apellidos ?? ''));
-$paciente_nombre_completo = trim(($cita->paciente_nombre ?? '') . ' ' . ($cita->paciente_apellidos ?? ''));
-
-$fecha_inicio = strtotime($cita->fecha_hora_inicio);
-$fecha_fin = strtotime($cita->fecha_hora_fin);
-$duracion = ($fecha_fin - $fecha_inicio) / 60;
-$codigo_verificacion = strtoupper(substr(md5($cita_id . $paciente_id_session . time()), 0, 8));
-
-// Preparar contenido del email HTML
-$html_body = '
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-</head>
-<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, \'Segoe UI\', Arial, sans-serif; background-color: #f5f7fa;">
-    <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f5f7fa; padding: 40px 20px;">
-        <tr>
-            <td align="center">
-                <table width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); overflow: hidden;">
-
-                    <!-- Header -->
-                    <tr>
-                        <td style="background: linear-gradient(135deg, #00796b 0%, #004d40 100%); padding: 40px 30px; text-align: center;">
-                            <h1 style="margin: 0; color: #ffffff; font-size: 32px; font-weight: 600; letter-spacing: -0.5px;">
-                                🏥 Health2You
-                            </h1>
-                            <p style="margin: 10px 0 0 0; color: rgba(255,255,255,0.9); font-size: 16px;">
-                                Justificante de Asistencia Médica
-                            </p>
-                        </td>
-                    </tr>
-
-                    <!-- Contenido -->
-                    <tr>
-                        <td style="padding: 40px 30px;">
-                            <p style="margin: 0 0 20px 0; font-size: 18px; color: #2c3e50; line-height: 1.6;">
-                                Estimado/a <strong style="color: #00796b;">' . htmlspecialchars($paciente_nombre_completo) . '</strong>,
-                            </p>
-
-                            <p style="margin: 0 0 30px 0; font-size: 15px; color: #5a6c7d; line-height: 1.6;">
-                                A continuación encontrará el justificante de su cita médica:
-                            </p>
-
-                            <!-- Detalles de la cita -->
-                            <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f8f9fa; border-left: 4px solid #00796b; border-radius: 8px; margin: 20px 0;">
-                                <tr>
-                                    <td style="padding: 20px;">
-                                        <h3 style="margin: 0 0 15px 0; color: #00796b; font-size: 18px;">📋 Detalles de la Cita</h3>
-
-                                        <table width="100%" cellpadding="0" cellspacing="0" style="font-size: 14px;">
-                                            <tr>
-                                                <td style="padding: 8px 0; color: #5a6c7d;"><strong style="color: #2c3e50;">Paciente:</strong></td>
-                                                <td style="padding: 8px 0; color: #5a6c7d;">' . htmlspecialchars($paciente_nombre_completo) . '</td>
-                                            </tr>
-                                            <tr>
-                                                <td style="padding: 8px 0; color: #5a6c7d;"><strong style="color: #2c3e50;">Nº TSI:</strong></td>
-                                                <td style="padding: 8px 0; color: #5a6c7d;">' . htmlspecialchars($cita->numero_tsi ?: 'No registrado') . '</td>
-                                            </tr>
-                                            <tr>
-                                                <td style="padding: 8px 0; color: #5a6c7d;"><strong style="color: #2c3e50;">Fecha:</strong></td>
-                                                <td style="padding: 8px 0; color: #5a6c7d;">' . date('d/m/Y', $fecha_inicio) . '</td>
-                                            </tr>
-                                            <tr>
-                                                <td style="padding: 8px 0; color: #5a6c7d;"><strong style="color: #2c3e50;">Hora:</strong></td>
-                                                <td style="padding: 8px 0; color: #5a6c7d;">' . date('H:i', $fecha_inicio) . ' - ' . date('H:i', $fecha_fin) . '</td>
-                                            </tr>
-                                            <tr>
-                                                <td style="padding: 8px 0; color: #5a6c7d;"><strong style="color: #2c3e50;">Médico:</strong></td>
-                                                <td style="padding: 8px 0; color: #5a6c7d;">Dr./Dra. ' . htmlspecialchars($medico_nombre_completo) . '</td>
-                                            </tr>
-                                            <tr>
-                                                <td style="padding: 8px 0; color: #5a6c7d;"><strong style="color: #2c3e50;">Especialidad:</strong></td>
-                                                <td style="padding: 8px 0; color: #5a6c7d;">' . htmlspecialchars($cita->especialidad ?: 'Medicina General') . '</td>
-                                            </tr>
-                                            <tr>
-                                                <td style="padding: 8px 0; color: #5a6c7d;"><strong style="color: #2c3e50;">Duración:</strong></td>
-                                                <td style="padding: 8px 0; color: #5a6c7d;">' . $duracion . ' minutos</td>
-                                            </tr>
-                                        </table>
-                                    </td>
-                                </tr>
-                            </table>
-
-                            <!-- Certificación -->
-                            <table width="100%" cellpadding="0" cellspacing="0" style="background: linear-gradient(135deg, #e0f2f1 0%, #b2dfdb 100%); border: 2px solid #00796b; border-radius: 12px; margin: 30px 0;">
-                                <tr>
-                                    <td style="padding: 30px; text-align: center;">
-                                        <h3 style="margin: 0 0 15px 0; color: #00796b; font-size: 20px;">✓ CERTIFICACIÓN</h3>
-                                        <p style="margin: 0; font-size: 15px; color: #2c3e50; line-height: 1.8;">
-                                            Se certifica que el/la paciente <strong>' . htmlspecialchars($paciente_nombre_completo) . '</strong>
-                                            acudió a consulta médica el día <strong>' . date('d/m/Y', $fecha_inicio) . '</strong>
-                                            a las <strong>' . date('H:i', $fecha_inicio) . '</strong> horas en las instalaciones de Health2You,
-                                            siendo atendido/a por el Dr./Dra. <strong>' . htmlspecialchars($medico_nombre_completo) . '</strong>
-                                            (' . htmlspecialchars($cita->especialidad ?: 'Medicina General') . ').
-                                        </p>
-                                    </td>
-                                </tr>
-                            </table>
-
-                            <!-- Advertencia -->
-                            <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #fff9e6; border-left: 4px solid #ffc107; border-radius: 8px; margin-top: 30px;">
-                                <tr>
-                                    <td style="padding: 20px;">
-                                        <p style="margin: 0; font-size: 14px; color: #856404; line-height: 1.6;">
-                                            <strong>⚠️ Importante:</strong> Este documento es un justificante oficial generado por el sistema Health2You.
-                                            Puede ser presentado en su lugar de trabajo o cualquier institución que lo requiera.
-                                        </p>
-                                    </td>
-                                </tr>
-                            </table>
-
-                            <!-- Código de verificación -->
-                            <p style="margin: 30px 0 0 0; font-size: 12px; color: #95a5a6; line-height: 1.8;">
-                                <strong>Código de verificación:</strong> ' . $codigo_verificacion . '<br>
-                                <strong>ID de cita:</strong> ' . str_pad($cita_id, 6, '0', STR_PAD_LEFT) . '<br>
-                                <strong>Fecha de emisión:</strong> ' . date('d/m/Y H:i:s') . '
-                            </p>
-                        </td>
-                    </tr>
-
-                    <!-- Footer -->
-                    <tr>
-                        <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e9ecef;">
-                            <p style="margin: 0 0 10px 0; font-size: 16px; color: #2c3e50; font-weight: 600;">
-                                Health2You - Tu salud, nuestra prioridad
-                            </p>
-                            <p style="margin: 0; font-size: 13px; color: #95a5a6; line-height: 1.6;">
-                                © ' . date('Y') . ' Health2You. Todos los derechos reservados.<br>
-                                Este es un correo automático, por favor no responder.
-                            </p>
-                        </td>
-                    </tr>
-
-                </table>
-            </td>
-        </tr>
-    </table>
-</body>
-</html>';
-
-// Texto plano alternativo
-$text_body = "
-JUSTIFICANTE DE ASISTENCIA MÉDICA
-Health2You
-
-Estimado/a " . $paciente_nombre_completo . ",
-
-Se certifica que acudió a consulta médica:
-
-- Fecha: " . date('d/m/Y', $fecha_inicio) . "
-- Hora: " . date('H:i', $fecha_inicio) . " - " . date('H:i', $fecha_fin) . "
-- Médico: Dr./Dra. " . $medico_nombre_completo . "
-- Especialidad: " . ($cita->especialidad ?: 'Medicina General') . "
-- TSI: " . ($cita->numero_tsi ?: 'No registrado') . "
-
-Código de verificación: " . $codigo_verificacion . "
-ID de cita: " . str_pad($cita_id, 6, '0', STR_PAD_LEFT) . "
-
-Health2You - Tu salud, nuestra prioridad
-";
-
-error_log("📧 Enviando email usando PHPMailer con SMTP...");
-error_log("  - Para: " . $email_destino);
-error_log("  - SMTP Host: " . SMTP_HOST);
-error_log("  - SMTP Port: " . SMTP_PORT);
-
-// Enviar email usando PHPMailer (IGUAL QUE EL 2FA)
-try {
-    $mail = new PHPMailer(true);
-
-    // Configuración SMTP (igual que login.php)
-    $mail->isSMTP();
-    $mail->Host = SMTP_HOST;
-    $mail->SMTPAuth = true;
-    $mail->Username = SMTP_USERNAME;
-    $mail->Password = SMTP_PASSWORD;
-    $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-    $mail->Port = SMTP_PORT;
-    $mail->CharSet = 'UTF-8';
-
-    // Remitente y destinatario
-    $mail->setFrom(SMTP_FROM_EMAIL, SMTP_FROM_NAME);
-    $mail->addAddress($email_destino, $paciente_nombre_completo);
-
-    // Contenido
-    $mail->isHTML(true);
-    $mail->Subject = '📄 Justificante de Cita Médica - Health2You';
-    $mail->Body = $html_body;
-    $mail->AltBody = $text_body;
-
-    // Enviar
-    $mail->send();
-
-    error_log("✅ ¡ÉXITO! Justificante enviado correctamente");
-    error_log("  - Cita ID: $cita_id");
-    error_log("  - Email: $email_destino");
-    error_log("  - Paciente: $paciente_nombre_completo");
-    error_log("==========================================");
-
-    echo json_encode([
-        'success' => true,
-        'message' => 'Justificante enviado correctamente a ' . $email_destino
-    ]);
-
-} catch (Exception $e) {
-    error_log("❌ ERROR al enviar el email con PHPMailer");
-    error_log("  - Error: " . $mail->ErrorInfo);
-    error_log("  - Exception: " . $e->getMessage());
-    error_log("==========================================");
-
-    echo json_encode([
-        'success' => false,
-        'message' => 'Error al enviar el email: ' . $mail->ErrorInfo
-    ]);
-}
-
-exit;
-root@ip-10-0-5-162:/var/www/html/wp-content/themes/health2you# cat dashboard.php
-<?php
 if (!defined('ABSPATH')) require_once('../../../wp-load.php');
 
 // IMPORTANTE: Iniciar sesión ANTES de cualquier cosa
@@ -381,6 +11,20 @@ error_reporting(E_ALL);
 
 global $wpdb;
 require_once get_stylesheet_directory() . '/config.php';
+
+// Definir constantes si no existen
+if (!defined('H2Y_CITA')) {
+    define('H2Y_CITA', $wpdb->prefix . 'h2y_cita');
+}
+if (!defined('H2Y_MEDICO')) {
+    define('H2Y_MEDICO', $wpdb->prefix . 'h2y_medico');
+}
+if (!defined('H2Y_PACIENTE')) {
+    define('H2Y_PACIENTE', $wpdb->prefix . 'h2y_paciente');
+}
+if (!defined('H2Y_ADMINISTRATIVO')) {
+    define('H2Y_ADMINISTRATIVO', $wpdb->prefix . 'h2y_administrativo');
+}
 
 // Verificar sesión activa
 if (!isset($_SESSION['h2y_tipo']) || !isset($_SESSION['h2y_user_id'])) {
@@ -440,13 +84,15 @@ if ($tipo_usuario === 'paciente') {
 
     // Citas de hoy
     $citas_hoy = $wpdb->get_results($wpdb->prepare("
-    SELECT c.*, CONCAT(m.nombre, ' ', m.apellidos) AS medico_nombre, p.email
-    FROM " . H2Y_CITA . " c
-    JOIN " . H2Y_MEDICO . " m ON c.medico_id = m.medico_id
-    JOIN " . H2Y_PACIENTE . " p ON c.paciente_id = p.paciente_id
-    WHERE c.paciente_id = %d
-      AND DATE(c.fecha_hora_inicio) = %s
-    ORDER BY c.fecha_hora_inicio ASC
+        SELECT c.*, 
+               CONCAT(m.nombre, ' ', m.apellidos) AS medico_nombre, 
+               p.email
+        FROM " . H2Y_CITA . " c
+        JOIN " . H2Y_MEDICO . " m ON c.medico_id = m.medico_id
+        JOIN " . H2Y_PACIENTE . " p ON c.paciente_id = p.paciente_id
+        WHERE c.paciente_id = %d
+          AND DATE(c.fecha_hora_inicio) = %s
+        ORDER BY c.fecha_hora_inicio ASC
     ", $paciente_id, $hoy));
 
     // Historial (pasadas)
@@ -461,13 +107,15 @@ if ($tipo_usuario === 'paciente') {
     ", $paciente_id));
 
 } elseif ($tipo_usuario === 'medico') {
-    // =========== MÉDICO (Lógica corregida del código 2) ===========
+    // =========== MÉDICO ===========
     $medico_id = $user_id;
 
-    // 1. Citas de hoy (SIN JOIN primero para evitar pérdida de datos)
+    // 1. Citas de hoy (sin JOIN primero para evitar pérdida de datos)
     $citas_hoy_raw = $wpdb->get_results($wpdb->prepare("
         SELECT * FROM " . H2Y_CITA . "
-        WHERE medico_id = %d AND fecha_hora_inicio >= %s AND fecha_hora_inicio <= %s
+        WHERE medico_id = %d 
+          AND fecha_hora_inicio >= %s 
+          AND fecha_hora_inicio <= %s
         ORDER BY fecha_hora_inicio ASC
     ", $medico_id, $hoy_inicio, $hoy_fin));
 
@@ -479,24 +127,25 @@ if ($tipo_usuario === 'paciente') {
             $cita->paciente_id
         ));
 
-        // Asignamos las variables que espera el HTML del Código 1
         $cita->paciente_nombre = $paciente
             ? trim($paciente->nombre . ' ' . $paciente->apellidos)
             : "Paciente ID: {$cita->paciente_id} (No encontrado)";
-        $cita->telefono = $paciente->telefono ?? 'No disponible';
-        $cita->numero_tsi = $paciente->numero_tsi ?? 'N/A';
+        $cita->telefono = isset($paciente->telefono) ? $paciente->telefono : 'No disponible';
+        $cita->numero_tsi = isset($paciente->numero_tsi) ? $paciente->numero_tsi : 'N/A';
 
         $citas_hoy[] = $cita;
     }
 
-    // 3. Próximas citas (siguientes 7 días) con la lógica robusta
+    // 3. Próximas citas (siguientes 7 días)
     $manana_inicio = date('Y-m-d 00:00:00', strtotime('+1 day'));
     $fecha_limite = date('Y-m-d 23:59:59', strtotime('+7 days'));
 
     $proximas_raw = $wpdb->get_results($wpdb->prepare("
         SELECT * FROM " . H2Y_CITA . "
-        WHERE medico_id = %d AND estado = 'pendiente'
-        AND fecha_hora_inicio >= %s AND fecha_hora_inicio <= %s
+        WHERE medico_id = %d 
+          AND estado = 'pendiente'
+          AND fecha_hora_inicio >= %s 
+          AND fecha_hora_inicio <= %s
         ORDER BY fecha_hora_inicio ASC
     ", $medico_id, $manana_inicio, $fecha_limite));
 
@@ -510,7 +159,7 @@ if ($tipo_usuario === 'paciente') {
         $cita->paciente_nombre = $paciente
             ? trim($paciente->nombre . ' ' . $paciente->apellidos)
             : "Paciente ID: {$cita->paciente_id}";
-        $cita->telefono = $paciente->telefono ?? 'No disponible';
+        $cita->telefono = isset($paciente->telefono) ? $paciente->telefono : 'No disponible';
 
         $proximas_citas[] = $cita;
     }
@@ -519,7 +168,6 @@ if ($tipo_usuario === 'paciente') {
     $total_citas_hoy = count($citas_hoy);
     $pendientes_hoy = count(array_filter($citas_hoy, function($c) { return $c->estado === 'pendiente'; }));
 
-    // Total citas generales (del código 1, útil para mensaje vacío)
     $total_citas_medico = $wpdb->get_var($wpdb->prepare(
         "SELECT COUNT(*) FROM " . H2Y_CITA . " WHERE medico_id = %d",
         $medico_id
@@ -699,14 +347,114 @@ if ($tipo_usuario === 'paciente') {
             color: #2e7d32;
             font-weight: 600;
         }
-        .debug-info {
-            background: #f0f0f0;
-            border: 1px solid #ccc;
-            padding: 12px;
-            margin: 16px 0;
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 999;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+        }
+        .modal-content {
+            background-color: #fff;
+            margin: 10% auto;
+            padding: 20px;
+            border-radius: 8px;
+            max-width: 400px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+        .videollamada-panel {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+            max-width: 400px;
+            z-index: 999;
+            overflow: hidden;
+        }
+        .videollamada-header {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ff5252 100%);
+            color: white;
+            padding: 16px;
+            font-weight: bold;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .videollamada-badge {
+            background: white;
+            color: #ff5252;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .solicitud-item {
+            padding: 16px;
+            border-bottom: 1px solid #eee;
+        }
+        .solicitud-item:last-child {
+            border-bottom: none;
+        }
+        .solicitud-motivo {
+            background: #f8f9fa;
+            padding: 8px;
             border-radius: 4px;
-            font-family: monospace;
-            font-size: 12px;
+            margin: 8px 0;
+            font-size: 13px;
+            max-height: 60px;
+            overflow-y: auto;
+        }
+        .solicitud-acciones {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .btn-aceptar {
+            flex: 1;
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .btn-aceptar:hover {
+            background: #218838;
+        }
+        .btn-rechazar {
+            flex: 1;
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .btn-rechazar:hover {
+            background: #c82333;
+        }
+        .no-solicitudes {
+            padding: 32px 16px;
+            text-align: center;
+            color: #999;
+        }
+        .urgencia-icon {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.5;
+            }
         }
     </style>
 </head>
@@ -739,7 +487,7 @@ if ($tipo_usuario === 'medico') {
                 <?php if ($tipo_usuario === 'paciente'): ?>
                     <span class="paciente-badge">Paciente</span>
                 <?php elseif ($tipo_usuario === 'medico'): ?>
-                    <span class="medico-badge">Médico - <?= htmlspecialchars($especialidad) ?></span>
+                    <span class="medico-badge">Médico<?php if ($especialidad): ?> - <?= htmlspecialchars($especialidad) ?><?php endif; ?></span>
                 <?php else: ?>
                     <span class="admin-badge">Administrativo</span>
                 <?php endif; ?>
@@ -789,7 +537,7 @@ if ($tipo_usuario === 'medico') {
                                 class="btn btn-success" style="padding:4px 8px;font-size:12px;" target="_blank">
                                     📄 Descargar
                                 </a>
-                                <button onclick="abrirModalEmail(<?= $c->cita_id ?>, '<?= $c->email ?>')"
+                                <button onclick="abrirModalEmail(<?= $c->cita_id ?>, '<?= htmlspecialchars($c->email) ?>')"
                                         class="btn btn-secondary" style="padding:4px 8px;font-size:12px;">
                                     📧 Enviar
                                 </button>
@@ -894,9 +642,9 @@ if ($tipo_usuario === 'medico') {
                             <td><strong><?= date('H:i', strtotime($c->fecha_hora_inicio)) ?></strong></td>
                             <td><?= htmlspecialchars($c->paciente_nombre) ?></td>
                             <td><small><?= htmlspecialchars($c->numero_tsi) ?></small></td>
-                            <td><?= htmlspecialchars($c->telefono ?: '-') ?></td>
+                            <td><?= htmlspecialchars($c->telefono) ?></td>
                             <td class="sintomas-cell">
-                                <?php if (!empty($c->sintomas) && strlen($c->sintomas) > 2): ?>
+                                <?php if (!empty($c->sintomas) && strlen(trim($c->sintomas)) > 2): ?>
                                     <?php
                                     $sintomas_corto = mb_strlen($c->sintomas) > 50
                                             ? mb_substr($c->sintomas, 0, 50) . '...'
@@ -972,9 +720,9 @@ if ($tipo_usuario === 'medico') {
                             <td><?= date('d/m/Y', strtotime($c->fecha_hora_inicio)) ?></td>
                             <td><?= date('H:i', strtotime($c->fecha_hora_inicio)) ?></td>
                             <td><?= htmlspecialchars($c->paciente_nombre) ?></td>
-                            <td><?= htmlspecialchars($c->telefono ?: '-') ?></td>
+                            <td><?= htmlspecialchars($c->telefono) ?></td>
                             <td class="sintomas-cell">
-                                <?php if (!empty($c->sintomas) && strlen($c->sintomas) > 2): ?>
+                                <?php if (!empty($c->sintomas) && strlen(trim($c->sintomas)) > 2): ?>
                                     <span style="color: #666; font-size: 13px;" title="<?= htmlspecialchars($c->sintomas) ?>">
                                         <?= htmlspecialchars(mb_strlen($c->sintomas) > 40 ? mb_substr($c->sintomas, 0, 40) . '...' : $c->sintomas) ?>
                                     </span>
@@ -991,10 +739,34 @@ if ($tipo_usuario === 'medico') {
             </table>
         <?php endif; ?>
 
+        <?php
+        // Panel de videollamadas para médicos que atienden urgencias
+        $atiende_urgencias = $wpdb->get_var($wpdb->prepare("
+            SELECT atiende_urgencias FROM " . H2Y_MEDICO . "
+            WHERE medico_id = %d
+        ", $user_id));
+
+        if ($atiende_urgencias):
+        ?>
+        <div class="videollamada-panel" id="videollamadaPanel">
+            <div class="videollamada-header">
+                <span><span class="urgencia-icon">🚨</span> Videollamadas Urgentes</span>
+                <span class="videollamada-badge" id="badgeSolicitudes">0</span>
+            </div>
+            <div id="listaSolicitudes" style="max-height: 400px; overflow-y: auto;">
+                <div class="no-solicitudes">
+                    <p>No hay solicitudes pendientes</p>
+                </div>
+            </div>
+        </div>
+        <?php endif; ?>
+
     <?php else: ?>
-<div class="filter-row" style="margin-bottom: 24px;">
-        <a href="<?php echo get_stylesheet_directory_uri(); ?>/cita_administrativo.php" class="btn">➕ Nueva cita</a>
-    </div>
+        <div class="filter-row" style="margin-bottom: 24px; display: flex; gap: 12px;">
+            <a href="<?php echo get_stylesheet_directory_uri(); ?>/cita_administrativo.php" class="btn">➕ Nueva cita</a>
+            <a href="<?php echo get_stylesheet_directory_uri(); ?>/admin_urgencias.php" class="btn" style="background: #ff5252;">🚨 Gestión Urgencias</a>
+        </div>
+        
         <div class="stats-grid">
             <div class="stat-card">
                 <p>Citas hoy</p>
@@ -1066,22 +838,38 @@ if ($tipo_usuario === 'medico') {
     <?php endif; ?>
 </div>
 
-<script>
-    function toggleSintomas(element) {
-        var full = element.querySelector('.sintomas-full');
-        var preview = element.querySelector('.sintomas-preview');
+<!-- Modal envío justificante -->
+<div id="emailModal" class="modal">
+    <div class="modal-content">
+        <h4>Enviar justificante</h4>
+        <p>Email de destino:</p>
+        <input type="email" id="emailDestino" style="width:100%;padding:10px;margin-bottom:15px;border:1px solid #ccc;border-radius:5px;">
+        <input type="hidden" id="citaIdActual">
+        <div id="modalAlert"></div>
+        <div style="text-align:right;">
+            <button onclick="cerrarModalEmail()" class="btn btn-secondary" style="margin-right:8px;">Cancelar</button>
+            <button onclick="enviarJustificante()" class="btn btn-success">Enviar</button>
+        </div>
+    </div>
+</div>
 
-        if (full) {
-            if (full.style.display === 'block') {
-                full.style.display = 'none';
-                preview.style.display = 'inline';
-            } else {
-                full.style.display = 'block';
-                preview.style.display = 'none';
-            }
+<script>
+function toggleSintomas(element) {
+    var full = element.querySelector('.sintomas-full');
+    var preview = element.querySelector('.sintomas-preview');
+
+    if (full) {
+        if (full.style.display === 'block') {
+            full.style.display = 'none';
+            preview.style.display = 'inline';
+        } else {
+            full.style.display = 'block';
+            preview.style.display = 'none';
         }
     }
-    function abrirModalEmail(citaId, email) {
+}
+
+function abrirModalEmail(citaId, email) {
     document.getElementById('citaIdActual').value = citaId;
     document.getElementById('emailDestino').value = email;
     document.getElementById('modalAlert').innerHTML = '';
@@ -1107,6 +895,7 @@ async function enviarJustificante() {
         const data = await resp.json();
         if (data.success) {
             alertDiv.innerHTML = '<span style="color:green;">✅ Justificante enviado correctamente</span>';
+            setTimeout(() => cerrarModalEmail(), 2000);
         } else {
             alertDiv.innerHTML = '<span style="color:red;">❌ Error: '+data.message+'</span>';
         }
@@ -1115,21 +904,151 @@ async function enviarJustificante() {
     }
 }
 
-</script>
-<!-- Modal envío justificante -->
-    <div id="emailModal" class="modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:999;">
-        <div class="modal-content" style="background:#fff;margin:10% auto;padding:20px;border-radius:8px;max-width:400px;">
-            <h4>Enviar justificante</h4>
-            <p>Email de destino:</p>
-            <input type="email" id="emailDestino" style="width:100%;padding:10px;margin-bottom:15px;border:1px solid #ccc;border-radius:5px;">
-            <input type="hidden" id="citaIdActual">
-            <div id="modalAlert"></div>
-            <div style="text-align:right;">
-                <button onclick="cerrarModalEmail()" class="btn btn-secondary" style="margin-right:8px;">Cancelar</button>
-                <button onclick="enviarJustificante()" class="btn btn-success">Enviar</button>
+<?php if ($tipo_usuario === 'medico' && isset($atiende_urgencias) && $atiende_urgencias): ?>
+// Sistema de videollamadas urgentes
+const videollamadaApiUrl = '<?= get_stylesheet_directory_uri(); ?>/videollamada_api.php';
+let checkVideollamadasInterval = null;
+
+async function cargarSolicitudesVideollamada() {
+    try {
+        const resp = await fetch(videollamadaApiUrl, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                accion: 'obtener_solicitudes'
+            })
+        });
+
+        const data = await resp.json();
+
+        if (data.success && data.solicitudes) {
+            mostrarSolicitudes(data.solicitudes);
+        }
+    } catch (error) {
+        console.error('Error cargando solicitudes:', error);
+    }
+}
+
+function mostrarSolicitudes(solicitudes) {
+    const badge = document.getElementById('badgeSolicitudes');
+    const lista = document.getElementById('listaSolicitudes');
+
+    badge.textContent = solicitudes.length;
+
+    if (solicitudes.length === 0) {
+        lista.innerHTML = '<div class="no-solicitudes"><p>No hay solicitudes pendientes</p></div>';
+        return;
+    }
+
+    let html = '';
+    solicitudes.forEach(sol => {
+        const tiempoRestante = sol.minutos_restantes > 0 ? `${sol.minutos_restantes} min restantes` : 'Expirando pronto';
+
+        html += `
+            <div class="solicitud-item" id="solicitud-${sol.videollamada_id}">
+                <div style="display: flex; justify-content: space-between; align-items: start;">
+                    <div>
+                        <strong>${sol.paciente_nombre}</strong>
+                        <div style="font-size: 12px; color: #666;">TSI: ${sol.numero_tsi || 'N/A'}</div>
+                    </div>
+                    <div style="font-size: 12px; color: #ff5252; font-weight: bold;">
+                        ⏰ ${tiempoRestante}
+                    </div>
+                </div>
+
+                <div class="solicitud-motivo">
+                    <strong>Motivo:</strong><br>
+                    ${escapeHtml(sol.motivo || 'No especificado')}
+                </div>
+
+                <div class="solicitud-acciones">
+                    <button class="btn-aceptar" onclick="aceptarVideollamada(${sol.videollamada_id})">
+                        ✓ Aceptar
+                    </button>
+                    <button class="btn-rechazar" onclick="rechazarVideollamada(${sol.videollamada_id})">
+                        ✕ Rechazar
+                    </button>
+                </div>
             </div>
-        </div>
-    </div>
+        `;
+    });
+
+    lista.innerHTML = html;
+}
+
+async function aceptarVideollamada(videollamadaId) {
+    if (!confirm('¿Aceptar esta videollamada urgente? Serás redirigido inmediatamente a la sala.')) {
+        return;
+    }
+
+    try {
+        const resp = await fetch(videollamadaApiUrl, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                accion: 'aceptar_solicitud',
+                videollamada_id: videollamadaId
+            })
+        });
+
+        const data = await resp.json();
+
+        if (data.success) {
+            window.location.href = '<?= get_stylesheet_directory_uri(); ?>/videollamada.php?token=' + data.token;
+        } else {
+            alert('Error: ' + (data.message || 'No se pudo aceptar la videollamada'));
+            cargarSolicitudesVideollamada();
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        alert('Error de conexión');
+    }
+}
+
+async function rechazarVideollamada(videollamadaId) {
+    if (!confirm('¿Rechazar esta solicitud de videollamada?')) {
+        return;
+    }
+
+    try {
+        const resp = await fetch(videollamadaApiUrl, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                accion: 'rechazar_solicitud',
+                videollamada_id: videollamadaId
+            })
+        });
+
+        const data = await resp.json();
+
+        if (data.success) {
+            const elemento = document.getElementById('solicitud-' + videollamadaId);
+            if (elemento) {
+                elemento.remove();
+            }
+            cargarSolicitudesVideollamada();
+        } else {
+            alert('Error al rechazar');
+        }
+    } catch (error) {
+        console.error('Error:', error);
+    }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Cargar solicitudes al iniciar
+cargarSolicitudesVideollamada();
+
+// Actualizar cada 5 segundos
+checkVideollamadasInterval = setInterval(cargarSolicitudesVideollamada, 5000);
+<?php endif; ?>
+</script>
 
 </body>
 </html>
