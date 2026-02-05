@@ -2,6 +2,8 @@
 /**
  * Health2You - Videollamada Segura
  * Sala de videollamada con acceso controlado por token
+ * Versión modificada con invalidación de tokens
+ * VERSIÓN CON SOLUCIONES ALTERNATIVAS PARA EL LOGO
  */
 
 if (!defined('ABSPATH')) {
@@ -29,6 +31,9 @@ $token = isset($_GET['token']) ? sanitize_text_field($_GET['token']) : '';
 if (empty($token)) {
     die('Token no proporcionado');
 }
+
+// SOLUCIÓN: Generar la URL del logo de múltiples formas
+$logo_url = get_stylesheet_directory_uri() . '/Logo_empresa_grupo_2.png';
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -36,7 +41,7 @@ if (empty($token)) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Videoconsulta Urgente - Health2You</title>
-    
+
     <!-- Librería Jitsi -->
     <script src='https://meet.jit.si/external_api.js'></script>
     <link href="https://fonts.googleapis.com/css2?family=Segoe+UI:wght@300;400;600;700&display=swap" rel="stylesheet">
@@ -48,13 +53,14 @@ if (empty($token)) {
         .user-tag { background: #e8f5e9; color: #0f9d58; padding: 5px 15px; border-radius: 20px; font-weight: bold; }
 
         .main { display: flex; flex: 1; padding: 20px; gap: 20px; height: calc(100vh - 70px); box-sizing: border-box; }
-        
+
         .video-container { flex: 3; background: black; border-radius: 15px; overflow: hidden; position: relative; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
         #jitsi-meet { width: 100%; height: 100%; }
 
         .sidebar { flex: 1; min-width: 300px; background: white; border-radius: 15px; padding: 25px; display: flex; flex-direction: column; align-items: center; text-align: center; box-shadow: 0 5px 15px rgba(0,0,0,0.05); }
-        
+
         .logo { width: 100px; height: 100px; object-fit: contain; margin-bottom: 15px; }
+        .logo-fallback { width: 100px; height: 100px; background: linear-gradient(135deg, #0f9d58 0%, #0d7a45 100%); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-size: 36px; font-weight: bold; margin-bottom: 15px; }
         h2 { margin: 0 0 5px 0; color: #333; }
         p { margin: 0 0 20px 0; color: #777; font-size: 0.9rem; }
 
@@ -98,7 +104,7 @@ if (empty($token)) {
             <div id="errorMsg" class="error-msg">
                 <h1 id="errorTitle">⛔ Error</h1>
                 <p id="errorText"></p>
-                <button onclick="window.location.href='<?= get_stylesheet_directory_uri(); ?>/dashboard.php'" 
+                <button onclick="volverAlDashboard()"
                         style="margin-top: 20px; padding: 12px 24px; background: white; color: #333; border: none; border-radius: 8px; cursor: pointer; font-weight: bold;">
                     ← Volver al Dashboard
                 </button>
@@ -106,7 +112,18 @@ if (empty($token)) {
         </div>
 
         <div class="sidebar">
-            <img src="<?= get_stylesheet_directory_uri(); ?>/Logo_empresa_grupo_2.png" alt="Logo" class="logo">
+            <!-- SOLUCIÓN: Múltiples intentos de cargar el logo con fallback -->
+            <img src="<?php echo esc_url($logo_url); ?>" 
+                 alt="Health2You Logo" 
+                 class="logo" 
+                 id="logoImg"
+                 onerror="this.style.display='none'; document.getElementById('logoFallback').style.display='flex';">
+            
+            <!-- Logo alternativo si falla la imagen -->
+            <div class="logo-fallback" id="logoFallback" style="display: none;">
+                H2Y
+            </div>
+            
             <h2>HEALTH 2 YOU</h2>
             <p>Videoconsulta Urgente</p>
 
@@ -141,9 +158,12 @@ if (empty($token)) {
         const tipoUsuario = '<?= $tipo_usuario ?>';
         const userId = <?= $user_id ?>;
         const userNombre = '<?= htmlspecialchars($user_nombre, ENT_QUOTES) ?>';
-        
+
         let jitsiApi = null;
         let videollamadaData = null;
+
+        // Debug: Verificar ruta del logo
+        console.log('URL del logo:', '<?php echo esc_url($logo_url); ?>');
 
         async function verificarYCargar() {
             try {
@@ -156,23 +176,23 @@ if (empty($token)) {
                         token: token
                     })
                 });
-                
+
                 const data = await resp.json();
-                
+
                 if (!data.success) {
                     mostrarError('Acceso Denegado', data.message || 'Token inválido o expirado');
                     return;
                 }
-                
+
                 videollamadaData = data.videollamada;
-                
+
                 // Mostrar info
                 document.getElementById('sala-id').textContent = '#' + videollamadaData.id;
-                
+
                 // Inicializar Jitsi
                 await iniciarJitsi();
-                
-                // Registrar entrada
+
+                // Registrar entrada e indicar que la llamada está en curso
                 await fetch(apiUrl, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -181,9 +201,9 @@ if (empty($token)) {
                         token: token
                     })
                 });
-                
+
                 document.getElementById('loadingMsg').style.display = 'none';
-                
+
             } catch (error) {
                 console.error('Error:', error);
                 mostrarError('Error de Conexión', 'No se pudo conectar con el servidor. Por favor, intenta de nuevo.');
@@ -202,8 +222,8 @@ if (empty($token)) {
                     userInfo: {
                         displayName: userNombre + (tipoUsuario === 'medico' ? ' (Médico)' : ' (Paciente)')
                     },
-                    configOverwrite: { 
-                        startWithAudioMuted: false, 
+                    configOverwrite: {
+                        startWithAudioMuted: false,
                         startWithVideoMuted: false,
                         prejoinPageEnabled: false,
                         disableDeepLinking: true,
@@ -243,15 +263,15 @@ if (empty($token)) {
 
         function actualizarParticipantes() {
             if (!jitsiApi) return;
-            
+
             const num = jitsiApi.getNumberOfParticipants();
             document.getElementById('num-participantes').textContent = num;
-            
+
             // Mostrar botón de expulsar si es médico y hay paciente
             if (tipoUsuario === 'medico' && num > 0) {
                 document.getElementById('btnExpulsar').style.display = 'block';
             }
-            
+
             // Control de máximo 2 personas
             if (num > 2) {
                 mostrarError('Sala Llena', 'Solo se permiten 2 participantes en la videollamada');
@@ -263,13 +283,9 @@ if (empty($token)) {
         }
 
         async function finalizarLlamada() {
-            if (jitsiApi) {
-                jitsiApi.dispose();
-                jitsiApi = null;
-            }
-            
+            // Primero notificar al servidor que la llamada ha terminado
             try {
-                await fetch(apiUrl, {
+                const resp = await fetch(apiUrl, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
@@ -277,33 +293,58 @@ if (empty($token)) {
                         token: token
                     })
                 });
+
+                const data = await resp.json();
+                console.log('Llamada finalizada en servidor:', data);
+
             } catch (error) {
-                console.error('Error finalizando:', error);
+                console.error('Error al finalizar en servidor:', error);
             }
-            
-            window.location.href = '<?= get_stylesheet_directory_uri(); ?>/dashboard.php';
+
+            // Luego cerrar Jitsi
+            if (jitsiApi) {
+                jitsiApi.dispose();
+                jitsiApi = null;
+            }
+
+            // Redireccionar según tipo de usuario
+            volverAlDashboard();
+        }
+
+        function volverAlDashboard() {
+            const dashboardUrl = tipoUsuario === 'medico'
+                ? '<?= get_stylesheet_directory_uri(); ?>/dashboard.php'
+                : '<?= get_stylesheet_directory_uri(); ?>/nueva_cita.php';
+
+            window.location.href = dashboardUrl;
         }
 
         async function expulsarPaciente() {
             if (!confirm('¿Estás seguro de que quieres expulsar al paciente de la videollamada?')) {
                 return;
             }
-            
+
             try {
-                await fetch(apiUrl, {
+                const resp = await fetch(apiUrl, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
                         accion: 'expulsar_participante',
-                        token: token,
-                        usuario_id: videollamadaData.paciente_id
+                        token: token
                     })
                 });
-                
-                alert('Paciente expulsado. Finalizando llamada...');
-                finalizarLlamada();
+
+                const data = await resp.json();
+
+                if (data.success) {
+                    alert('Paciente expulsado. Finalizando llamada...');
+                    finalizarLlamada();
+                } else {
+                    alert('Error: ' + data.message);
+                }
             } catch (error) {
                 console.error('Error expulsando:', error);
+                alert('Error de conexión al intentar expulsar');
             }
         }
 
@@ -320,7 +361,14 @@ if (empty($token)) {
         // Limpiar al cerrar la página
         window.addEventListener('beforeunload', () => {
             if (jitsiApi) {
-                finalizarLlamada();
+                // Intentar finalizar sin esperar respuesta
+                navigator.sendBeacon(
+                    apiUrl,
+                    JSON.stringify({
+                        accion: 'finalizar_llamada',
+                        token: token
+                    })
+                );
             }
         });
     </script>

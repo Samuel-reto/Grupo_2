@@ -2,6 +2,7 @@
 /**
  * Health2You - Solicitud de Videollamada Urgente
  * Permite a los pacientes solicitar una videollamada con un médico de urgencias
+ * Versión modificada con manejo de cooldown
  */
 
 if (!defined('ABSPATH')) {
@@ -69,6 +70,10 @@ $paciente_nombre = $_SESSION['h2y_user_nombre'] ?? 'Paciente';
             background: #f8d7da;
             border: 2px solid #dc3545;
         }
+        .estado-cooldown {
+            background: #e3f2fd;
+            border: 2px solid #2196f3;
+        }
         .btn-grande {
             padding: 16px 32px;
             font-size: 18px;
@@ -95,6 +100,22 @@ $paciente_nombre = $_SESSION['h2y_user_nombre'] ?? 'Paciente';
             font-weight: bold;
             color: #ff5252;
         }
+        .alert-box {
+            padding: 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        .alert-info {
+            background: #e3f2fd;
+            border-left: 4px solid #2196f3;
+            color: #1976d2;
+        }
+        .alert-warning {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            color: #856404;
+        }
     </style>
 </head>
 <body style="background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%); min-height: 100vh;">
@@ -111,6 +132,12 @@ $paciente_nombre = $_SESSION['h2y_user_nombre'] ?? 'Paciente';
         <div class="urgencia-icon">🚨</div>
         <h1 style="margin: 0;">Videollamada Urgente</h1>
         <p style="margin: 8px 0 0 0; opacity: 0.9;">Atención médica inmediata por videoconferencia</p>
+    </div>
+
+    <!-- Alerta de cooldown (oculta por defecto) -->
+    <div id="alertCooldown" class="alert-box alert-warning">
+        <strong>⏱️ Tiempo de espera</strong>
+        <p id="cooldownMessage" style="margin: 8px 0 0 0;"></p>
     </div>
 
     <!-- Formulario de solicitud -->
@@ -133,7 +160,7 @@ $paciente_nombre = $_SESSION['h2y_user_nombre'] ?? 'Paciente';
             <small style="color: #666;">Sé lo más específico posible. Esta información ayudará al médico a prepararse.</small>
         </div>
 
-        <button onclick="solicitarVideollamada()" class="btn btn-grande" style="background: #ff5252; color: white;">
+        <button onclick="solicitarVideollamada()" id="btnSolicitar" class="btn btn-grande" style="background: #ff5252; color: white;">
             📞 Solicitar Videollamada Ahora
         </button>
     </div>
@@ -159,6 +186,11 @@ async function solicitarVideollamada() {
         return;
     }
 
+    // Deshabilitar botón mientras se procesa
+    const btn = document.getElementById('btnSolicitar');
+    btn.disabled = true;
+    btn.textContent = '⏳ Procesando...';
+
     try {
         const resp = await fetch(apiUrl, {
             method: 'POST',
@@ -173,32 +205,60 @@ async function solicitarVideollamada() {
 
         if (data.success) {
             videollamadaId = data.videollamada_id;
-            
+
             // IMPORTANTE: Guardar el timestamp de expiración
             expiracionTimestamp = data.expira_timestamp || (Date.now() + (30 * 60 * 1000));
-            
+
             document.getElementById('formularioSolicitud').style.display = 'none';
             document.getElementById('estadoSolicitud').style.display = 'block';
             mostrarEstadoSolicitada();
             iniciarVerificacion();
         } else {
+            // Verificar si es error de cooldown
+            if (data.cooldown && data.minutos_restantes) {
+                mostrarAlertaCooldown(data.message, data.minutos_restantes);
+                btn.disabled = false;
+                btn.textContent = '📞 Solicitar Videollamada Ahora';
+                return;
+            }
+
             if (data.solicitud) {
                 // Ya tiene una solicitud activa
                 videollamadaId = data.solicitud.id;
                 expiracionTimestamp = data.solicitud.expira_timestamp || (Date.now() + (30 * 60 * 1000));
-                
+
                 document.getElementById('formularioSolicitud').style.display = 'none';
                 document.getElementById('estadoSolicitud').style.display = 'block';
                 mostrarEstadoSolicitada();
                 iniciarVerificacion();
             } else {
                 alert('Error: ' + data.message);
+                btn.disabled = false;
+                btn.textContent = '📞 Solicitar Videollamada Ahora';
             }
         }
     } catch (error) {
         console.error('Error:', error);
         alert('Error de conexión. Por favor, intenta de nuevo.');
+        btn.disabled = false;
+        btn.textContent = '📞 Solicitar Videollamada Ahora';
     }
+}
+
+function mostrarAlertaCooldown(mensaje, minutosRestantes) {
+    const alertBox = document.getElementById('alertCooldown');
+    const messageEl = document.getElementById('cooldownMessage');
+    
+    messageEl.textContent = mensaje;
+    alertBox.style.display = 'block';
+
+    // Ocultar la alerta después de 10 segundos
+    setTimeout(() => {
+        alertBox.style.display = 'none';
+    }, 10000);
+
+    // Scroll a la alerta
+    alertBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 function mostrarEstadoSolicitada() {
@@ -233,7 +293,6 @@ function actualizarCountdown() {
 
     if (diff <= 0) {
         clearInterval(countdownInterval);
-        // No marcar como expirada automáticamente, esperar a que el servidor lo confirme
         const countdownEl = document.getElementById('countdown');
         if (countdownEl) {
             countdownEl.textContent = '0:00';
@@ -248,7 +307,7 @@ function actualizarCountdown() {
     const countdownEl = document.getElementById('countdown');
     if (countdownEl) {
         countdownEl.textContent = `${minutos}:${segundos.toString().padStart(2, '0')}`;
-        
+
         // Cambiar color si queda menos de 5 minutos
         if (minutos < 5) {
             countdownEl.style.color = '#ff9800';
