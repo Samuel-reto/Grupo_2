@@ -844,9 +844,15 @@ if ($tipo_usuario === 'medico') {
         <h4>Enviar justificante</h4>
         <p>Email de destino:</p>
         <input type="email" id="emailDestino" style="width:100%;padding:10px;margin-bottom:15px;border:1px solid #ccc;border-radius:5px;">
+        
+        <div style="margin-bottom: 15px; font-size: 13px; display: flex; align-items: flex-start; gap: 8px;">
+            <input type="checkbox" id="actualizarPerfil" style="margin-top: 3px;">
+            <label for="actualizarPerfil">¿Quieres asociar este correo con tu cuenta y usarlo para verificar tu identidad?</label>
+        </div>
+
         <input type="hidden" id="citaIdActual">
         <div id="modalAlert"></div>
-        <div style="text-align:right;">
+        <div style="text-align:right; margin-top: 10px;">
             <button onclick="cerrarModalEmail()" class="btn btn-secondary" style="margin-right:8px;">Cancelar</button>
             <button onclick="enviarJustificante()" class="btn btn-success">Enviar</button>
         </div>
@@ -883,6 +889,7 @@ function cerrarModalEmail() {
 async function enviarJustificante() {
     const citaId = document.getElementById('citaIdActual').value;
     const email = document.getElementById('emailDestino').value;
+    const actualizar = document.getElementById('actualizarPerfil').checked; // Capturar checkbox
     const alertDiv = document.getElementById('modalAlert');
     alertDiv.innerHTML = 'Enviando...';
 
@@ -890,12 +897,19 @@ async function enviarJustificante() {
         const resp = await fetch('<?= get_stylesheet_directory_uri(); ?>/enviar_justificante.php', {
             method: 'POST',
             headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({cita_id: citaId, email})
+            body: JSON.stringify({
+                cita_id: citaId, 
+                email: email,
+                actualizar_perfil: actualizar // Enviamos la preferencia al servidor
+            })
         });
         const data = await resp.json();
         if (data.success) {
-            alertDiv.innerHTML = '<span style="color:green;">✅ Justificante enviado correctamente</span>';
-            setTimeout(() => cerrarModalEmail(), 2000);
+            alertDiv.innerHTML = '<span style="color:green;">✅ ' + data.message + '</span>';
+            setTimeout(() => {
+                cerrarModalEmail();
+                if(actualizar) location.reload(); // Recargar para ver cambios si se actualizó
+            }, 2000);
         } else {
             alertDiv.innerHTML = '<span style="color:red;">❌ Error: '+data.message+'</span>';
         }
