@@ -1,8 +1,11 @@
 -- =====================================================
--- DDL MySQL RDS - Citas Médicas + ADMINISTRATIVOS
+-- 1. DROP
 -- =====================================================
 
--- 1. DROP de tablas, triggers y vistas
+DROP EVENT IF EXISTS limpiar_videollamadas_expiradas;
+
+DROP TABLE IF EXISTS videollamada_log;
+DROP TABLE IF EXISTS videollamada;
 DROP TABLE IF EXISTS justificante;
 DROP TABLE IF EXISTS cita;
 DROP TABLE IF EXISTS administrativo;
@@ -12,7 +15,10 @@ DROP TABLE IF EXISTS medico;
 DROP TRIGGER IF EXISTS trigger_justificante;
 DROP VIEW IF EXISTS vista_citas_completas;
 
--- 2. Crear tablas
+
+-- =====================================================
+-- 2. TABLAS
+-- =====================================================
 
 CREATE TABLE paciente (
   paciente_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -25,6 +31,7 @@ CREATE TABLE paciente (
   fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+
 CREATE TABLE medico (
   medico_id INT AUTO_INCREMENT PRIMARY KEY,
   nombre VARCHAR(100) NOT NULL,
@@ -32,8 +39,10 @@ CREATE TABLE medico (
   colegiado VARCHAR(20) UNIQUE NOT NULL,
   email VARCHAR(255) NOT NULL,
   especialidad VARCHAR(100) NOT NULL,
+  atiende_urgencias TINYINT(1) DEFAULT 0,
   password_hash VARCHAR(255) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 
 CREATE TABLE administrativo (
   administrativo_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -43,6 +52,7 @@ CREATE TABLE administrativo (
   password_hash VARCHAR(255) NOT NULL,
   fecha_alta TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 
 CREATE TABLE cita (
   cita_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -54,12 +64,15 @@ CREATE TABLE cita (
   fecha_hora_fin DATETIME NOT NULL,
   estado VARCHAR(20) DEFAULT 'pendiente',
   fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
   FOREIGN KEY (paciente_id) REFERENCES paciente(paciente_id),
   FOREIGN KEY (medico_id) REFERENCES medico(medico_id),
   FOREIGN KEY (administrativo_id) REFERENCES administrativo(administrativo_id),
-  CHECK (estado IN ('pendiente', 'asistida', 'cancelada')),
+
+  CHECK (estado IN ('pendiente','asistida','cancelada')),
   CHECK (fecha_hora_fin > fecha_hora_inicio)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 
 CREATE TABLE justificante (
   justificante_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -67,21 +80,73 @@ CREATE TABLE justificante (
   fecha_emision TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   numero_serie VARCHAR(50) UNIQUE NOT NULL,
   emitido_por INT NOT NULL,
+
   FOREIGN KEY (cita_id) REFERENCES cita(cita_id),
   FOREIGN KEY (emitido_por) REFERENCES medico(medico_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 3. ÍNDICES
+
+-- =====================================================
+-- VIDEOLLAMADAS
+-- =====================================================
+
+CREATE TABLE videollamada (
+    videollamada_id INT AUTO_INCREMENT PRIMARY KEY,
+    paciente_id INT NOT NULL,
+    medico_id INT DEFAULT NULL,
+    token VARCHAR(64) NOT NULL UNIQUE,
+    estado ENUM('solicitada','aceptada','en_curso','finalizada','rechazada','expirada') DEFAULT 'solicitada',
+    motivo TEXT,
+    fecha_solicitud DATETIME NOT NULL,
+    fecha_aceptacion DATETIME DEFAULT NULL,
+    fecha_inicio DATETIME DEFAULT NULL,
+    fecha_fin DATETIME DEFAULT NULL,
+    expira_en DATETIME NOT NULL,
+
+    FOREIGN KEY (paciente_id) REFERENCES paciente(paciente_id) ON DELETE CASCADE,
+    FOREIGN KEY (medico_id) REFERENCES medico(medico_id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+CREATE TABLE videollamada_log (
+    log_id INT AUTO_INCREMENT PRIMARY KEY,
+    videollamada_id INT NOT NULL,
+    usuario_id INT NOT NULL,
+    tipo_usuario ENUM('paciente','medico') NOT NULL,
+    accion ENUM('entro','salio','expulsado') NOT NULL,
+    timestamp DATETIME NOT NULL,
+
+    FOREIGN KEY (videollamada_id)
+        REFERENCES videollamada(videollamada_id)
+        ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- =====================================================
+-- 3. ÍNDICES (MAX 2 POR TABLA)
+-- =====================================================
+
+-- paciente
 CREATE INDEX idx_paciente_tsi ON paciente(numero_tsi);
 CREATE INDEX idx_paciente_telefono ON paciente(telefono);
+
+-- medico
 CREATE INDEX idx_medico_colegiado ON medico(colegiado);
-CREATE INDEX idx_medico_especialidad ON medico(especialidad);
+CREATE INDEX idx_medico_urgencias ON medico(atiende_urgencias);
+
+-- cita
 CREATE INDEX idx_cita_paciente ON cita(paciente_id);
-CREATE INDEX idx_cita_medico ON cita(medico_id);
-CREATE INDEX idx_cita_admin ON cita(administrativo_id);
 CREATE INDEX idx_cita_fecha ON cita(fecha_hora_inicio);
 
+-- videollamada
+CREATE INDEX idx_token_estado ON videollamada(token, estado);
+CREATE INDEX idx_estado_expiracion ON videollamada(estado, expira_en);
+
+
+-- =====================================================
 -- 4. TRIGGER
+-- =====================================================
+
 DELIMITER $$
 
 CREATE TRIGGER trigger_justificante
@@ -100,7 +165,32 @@ END$$
 
 DELIMITER ;
 
--- 5. VISTA ACTUALIZADA
+
+-- =====================================================
+-- 5. EVENTO
+-- =====================================================
+
+DELIMITER $$
+
+CREATE EVENT limpiar_videollamadas_expiradas
+ON SCHEDULE EVERY 10 MINUTE
+DO
+BEGIN
+    UPDATE videollamada
+    SET estado = 'expirada'
+    WHERE estado IN ('solicitada','aceptada')
+    AND expira_en < NOW();
+END$$
+
+DELIMITER ;
+
+SET GLOBAL event_scheduler = ON;
+
+
+-- =====================================================
+-- 6. VISTA
+-- =====================================================
+
 CREATE VIEW vista_citas_completas AS
 SELECT
   c.cita_id,
