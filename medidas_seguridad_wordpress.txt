@@ -1,0 +1,37 @@
+Aquí tienes los 10 trucos más fáciles de aplicar, seleccionados por requerir poca configuración técnica o poder gestionarse mediante plugins sencillos:
+
+
+Mantener todo actualizado: Es la medida más crítica y sencilla; debes tener al día el núcleo de WordPress, los temas y los plugins.
+
+
+
+Eliminar lo innecesario: No basta con desactivar los temas y plugins que no uses; debes eliminarlos por completo para evitar que posibles vulnerabilidades sigan ahí.
+
+
+Usar nombres de usuario seguros: Nunca utilices "admin" o "administrador" como nombre de usuario, ya que son los primeros que intentan los atacantes.
+
+
+
+Contraseñas fuertes: Utilizar contraseñas robustas para todos tus usuarios es una barrera fundamental contra los ataques de fuerza bruta.
+
+
+
+
+Instalar un plugin de seguridad (Firewall): Plugins como Wordfence o All In One Security centralizan muchas protecciones en un solo lugar de forma intuitiva.
+
+
+
+Limitar intentos de acceso: Puedes usar plugins específicos (como Limit Login Attempts) para bloquear temporalmente a quien falle la contraseña varias veces.
+
+
+
+Cambiar la URL de acceso: Utilizar un plugin como WPS Hide Login para mover la puerta de entrada de /wp-admin a una ruta personalizada que los bots no conozcan.
+
+
+Activar HTTPS: Si tu hosting ofrece certificados gratuitos como Let's Encrypt, actívalo desde su panel de control para cifrar la información de tu sitio.
+
+
+Deshabilitar la edición de archivos: Añadir una simple línea al archivo wp-config.php impide que cualquier persona (incluido un atacante) edite el código de tus temas o plugins desde el panel de control.
+
+
+Descargar solo de sitios oficiales: Limítate a obtener temas y plugins del repositorio oficial de WordPress o de desarrolladores reconocidos para evitar software malicioso.
