@@ -75,9 +75,12 @@ $input = json_decode($raw_input, true);
 
 $cita_id = (int)($input['cita_id'] ?? 0);
 $email_destino = sanitize_email($input['email'] ?? '');
+// 1. Capturamos si el usuario marcó el checkbox
+$actualizar_perfil = isset($input['actualizar_perfil']) && $input['actualizar_perfil'] === true;
 
 error_log("✓ Cita ID: $cita_id");
 error_log("✓ Email destino: $email_destino");
+error_log("✓ Actualizar perfil: " . ($actualizar_perfil ? 'SI' : 'NO'));
 
 if ($cita_id <= 0) {
     error_log("❌ Error: ID de cita inválido");
@@ -89,6 +92,22 @@ if (!is_email($email_destino)) {
     error_log("❌ Error: Email inválido");
     echo json_encode(['success' => false, 'message' => 'Email inválido']);
     exit;
+}
+
+// 2. Si el usuario aceptó, actualizamos su correo en la tabla h2y_paciente
+if ($actualizar_perfil) {
+    $paciente_id_session = $_SESSION['h2y_paciente_id'] ?? $_SESSION['h2y_pacienteid'] ?? 0;
+    
+    if ($paciente_id_session > 0) {
+        $wpdb->update(
+            $wpdb->prefix . 'h2y_paciente',
+            ['email' => $email_destino], // Nuevo email
+            ['paciente_id' => $paciente_id_session], // Donde el ID sea el del usuario actual
+            ['%s'], 
+            ['%d']
+        );
+        error_log("✅ Email actualizado en el perfil del paciente ID: $paciente_id_session");
+    }
 }
 
 // Query sin numero_colegiado (campo que no existe)
@@ -367,3 +386,4 @@ try {
 }
 
 exit;
+
