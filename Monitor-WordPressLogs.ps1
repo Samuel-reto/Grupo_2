@@ -1,20 +1,21 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    WordPress Enterprise Monitoring Dashboard v3.0
+    WordPress Enterprise Monitoring Dashboard v3.1 - Enhanced Instance Detection
 .DESCRIPTION
-    Monitorea ASG WordPress + RDS + ALB y genera dashboard HTML en S3
-    ✨ AUTO-DETECTA RDS y ALB - NO requiere modificar config.env
+    Monitorea ASG WordPress + RDS + ALB con métricas reales disponibles
+    ✨ Incluye uso de CPU, Memoria, Disco de instancias EC2
+    🆕 NUEVA CARACTERÍSTICA: Detecta instancias caídas/unhealthy/terminando
 .NOTES
     Author: Valentin Gutierrez (ASIR2)
-    Version: 3.0 - Auto-detección de recursos
+    Version: 3.1 Enhanced
     CRON: 0 */6 * * * + 0 8 * * *
 #>
 
 param()
 
 # =========================================
-# CONFIGURACIÓN (desde variables de entorno)
+# CONFIGURACIÓN
 # =========================================
 $AWS_REGION = $env:AWS_REGION
 $ASG_NAME = $env:ASG_NAME
@@ -30,154 +31,377 @@ function Write-Log {
     Write-Host $Message
 }
 
+function Get-CloudWatchMetric {
+    param(
+        [string]$Namespace,
+        [string]$MetricName,
+        [hashtable]$Dimensions,
+        [datetime]$StartTime,
+        [datetime]$EndTime,
+        [string]$Statistic = "Average",
+        [int]$Period = 300
+    )
+    
+    try {
+        # Construir dimensiones para el comando
+        $dimArgs = @()
+        foreach ($key in $Dimensions.Keys) {
+            $dimArgs += "Name=$key,Value=$($Dimensions[$key])"
+        }
+        
+        $result = aws cloudwatch get-metric-statistics `
+            --namespace $Namespace `
+            --metric-name $MetricName `
+            --dimensions $dimArgs `
+            --start-time $StartTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss") `
+            --end-time $EndTime.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss") `
+            --period $Period `
+            --statistics $Statistic `
+            --region $AWS_REGION `
+            --output json 2>$null
+        
+        if ($LASTEXITCODE -ne 0 -or -not $result) {
+            return $null
+        }
+        
+        $data = $result | ConvertFrom-Json
+        
+        if (-not $data.Datapoints -or $data.Datapoints.Count -eq 0) {
+            return $null
+        }
+        
+        $latestDatapoint = $data.Datapoints | Sort-Object Timestamp -Descending | Select-Object -First 1
+        
+        $value = switch ($Statistic) {
+            "Average" { $latestDatapoint.Average }
+            "Sum" { $latestDatapoint.Sum }
+            "Maximum" { $latestDatapoint.Maximum }
+            "Minimum" { $latestDatapoint.Minimum }
+        }
+        
+        return $value
+        
+    } catch {
+        return $null
+    }
+}
+
 Write-Log "========================================"
-Write-Log "🚀 WordPress Enterprise Dashboard v3.0"
+Write-Log "🚀 WordPress Dashboard v3.1 Enhanced"
 Write-Log "========================================"
 
-# =========================================
-# 0. AUTO-DETECTAR RDS Y ALB
-# =========================================
-Write-Log "🔍 Auto-detectando recursos AWS..."
+$endTime = Get-Date
+$startTime = $endTime.AddMinutes(-30)  # Últimos 30 minutos
 
-# Detectar RDS del stack
+Write-Log "⏰ Ventana: $($startTime.ToString('HH:mm')) - $($endTime.ToString('HH:mm'))"
+
+# =========================================
+# 0. AUTO-DETECTAR RECURSOS
+# =========================================
+Write-Log "🔍 Auto-detectando recursos..."
+
+# RDS
 $rdsInstanceId = aws cloudformation describe-stack-resources `
     --stack-name $STACK_NAME `
     --query 'StackResources[?ResourceType==`AWS::RDS::DBInstance`].PhysicalResourceId' `
     --output text --region $AWS_REGION 2>$null
 
-if (-not $rdsInstanceId -or $rdsInstanceId -eq "") {
-    # Fallback: buscar cualquier RDS con "wordpress" en el nombre
-    $rdsInstanceId = aws rds describe-db-instances `
-        --query 'DBInstances[?contains(DBInstanceIdentifier,`wordpress`)].DBInstanceIdentifier' `
-        --output text --region $AWS_REGION 2>$null
-    if ($rdsInstanceId) {
-        $rdsInstanceId = $rdsInstanceId.Split()[0]  # Tomar el primero si hay varios
-    }
-}
-
 if (-not $rdsInstanceId) {
-    $rdsInstanceId = "wordpress-db"  # Default
+    $rdsInstanceId = aws rds describe-db-instances `
+        --query 'DBInstances[0].DBInstanceIdentifier' `
+        --output text --region $AWS_REGION 2>$null
 }
-Write-Log "✅ RDS detectado: $rdsInstanceId"
 
-# Detectar ALB del stack
+if (-not $rdsInstanceId) { $rdsInstanceId = "wordpress-db" }
+Write-Log "✅ RDS: $rdsInstanceId"
+
+# ALB
 $albArn = aws cloudformation describe-stack-resources `
     --stack-name $STACK_NAME `
     --query 'StackResources[?ResourceType==`AWS::ElasticLoadBalancingV2::LoadBalancer`].PhysicalResourceId' `
     --output text --region $AWS_REGION 2>$null
 
-if (-not $albArn -or $albArn -eq "") {
-    # Fallback: buscar ALB con "wordpress" o el nombre del stack
+if (-not $albArn) {
     $albArn = aws elbv2 describe-load-balancers `
-        --query "LoadBalancers[?contains(LoadBalancerName,'WordPress') || contains(LoadBalancerName,'$STACK_NAME')].LoadBalancerArn" `
+        --query 'LoadBalancers[0].LoadBalancerArn' `
         --output text --region $AWS_REGION 2>$null
-    if ($albArn) {
-        $albArn = $albArn.Split()[0]  # Tomar el primero
-    }
 }
 
 if ($albArn) {
-    Write-Log "✅ ALB detectado: $albArn"
+    Write-Log "✅ ALB detectado"
 } else {
-    Write-Log "⚠️  ALB no encontrado - métricas de ALB no disponibles"
+    Write-Log "⚠️  ALB no encontrado"
 }
 
 # =========================================
-# 1. WEB INSTANCES (ASG filtrado)
+# 1. OBTENER INFO COMPLETA DEL ASG
 # =========================================
-Write-Log "🌐 WEB: Instancias del ASG $ASG_NAME"
-$instanceIdsRaw = aws autoscaling describe-auto-scaling-groups `
-    --auto-scaling-group-names $ASG_NAME --query 'AutoScalingGroups[0].Instances[?LifecycleState==`InService`].[InstanceId]' `
-    --output json --region $AWS_REGION | ConvertFrom-Json
+Write-Log "🌐 Obteniendo info completa del ASG: $ASG_NAME"
 
-$webInstances = @()
-if ($instanceIdsRaw) {
-    foreach ($instanceId in $instanceIdsRaw) {
-        $details = aws ec2 describe-instances --instance-ids $instanceId `
-            --query 'Reservations[0].Instances[0].[InstanceId,PrivateIpAddress,InstanceType,State.Name,LaunchTime]' `
-            --output json --region $AWS_REGION | ConvertFrom-Json
+$asgInfoRaw = aws autoscaling describe-auto-scaling-groups `
+    --auto-scaling-group-names $ASG_NAME `
+    --region $AWS_REGION `
+    --output json 2>$null
 
-        if ($details -and $details.Count -ge 4) {
-            $webInstances += [PSCustomObject]@{
-                InstanceId = $details[0]
-                PrivateIP = $details[1]
-                InstanceType = $details[2]
-                State = $details[3]
-                LaunchTime = if($details.Count -ge 5) { $details[4] } else { $null }
+if (-not $asgInfoRaw) {
+    Write-Log "❌ ERROR: No se pudo obtener info del ASG"
+    exit 1
+}
+
+$asgInfo = $asgInfoRaw | ConvertFrom-Json
+$asgData = $asgInfo.AutoScalingGroups[0]
+
+$desiredCapacity = $asgData.DesiredCapacity
+$minSize = $asgData.MinSize
+$maxSize = $asgData.MaxSize
+$currentCapacity = $asgData.Instances.Count
+
+Write-Log "📊 ASG Configuración:"
+Write-Log "   • Capacidad deseada: $desiredCapacity"
+Write-Log "   • Min/Max: $minSize/$maxSize"
+Write-Log "   • Instancias actuales: $currentCapacity"
+
+# =========================================
+# 2. OBTENER TODAS LAS INSTANCIAS (SIN FILTRAR)
+# =========================================
+Write-Log "🔍 Obteniendo TODAS las instancias del ASG..."
+
+$allInstances = @()
+$healthyInstances = @()
+$unhealthyInstances = @()
+$terminatingInstances = @()
+$otherStateInstances = @()
+
+foreach ($instance in $asgData.Instances) {
+    $instanceId = $instance.InstanceId
+    $lifecycleState = $instance.LifecycleState
+    $healthStatus = $instance.HealthStatus
+    $availabilityZone = $instance.AvailabilityZone
+    
+    Write-Log "   Procesando: $instanceId | Lifecycle: $lifecycleState | Health: $healthStatus"
+    
+    # Obtener detalles EC2
+    $ec2Details = $null
+    try {
+        $ec2DetailsRaw = aws ec2 describe-instances --instance-ids $instanceId `
+            --query 'Reservations[0].Instances[0].[InstanceId,PrivateIpAddress,InstanceType,State.Name,LaunchTime,PublicIpAddress]' `
+            --output json --region $AWS_REGION 2>$null
+        
+        if ($ec2DetailsRaw) {
+            $ec2Details = $ec2DetailsRaw | ConvertFrom-Json
+        }
+    } catch {
+        Write-Log "   ⚠️  No se pudo obtener detalles EC2 para $instanceId"
+    }
+
+    # Inicializar objeto de instancia
+    $instanceObj = [PSCustomObject]@{
+        InstanceId = $instanceId
+        LifecycleState = $lifecycleState
+        HealthStatus = $healthStatus
+        AvailabilityZone = $availabilityZone
+        PrivateIP = if($ec2Details) { $ec2Details[1] } else { "N/A" }
+        PublicIP = if($ec2Details -and $ec2Details.Count -gt 5) { $ec2Details[5] } else { "N/A" }
+        InstanceType = if($ec2Details) { $ec2Details[2] } else { "N/A" }
+        EC2State = if($ec2Details) { $ec2Details[3] } else { "unknown" }
+        LaunchTime = if($ec2Details -and $ec2Details.Count -ge 5) { $ec2Details[4] } else { $null }
+        CPUUtilization = 0
+        NetworkInMB = 0
+        NetworkOutMB = 0
+        StatusCheckOK = $false
+        IsHealthy = ($lifecycleState -eq "InService" -and $healthStatus -eq "Healthy")
+    }
+
+    # Solo obtener métricas si la instancia está running
+    if ($lifecycleState -eq "InService" -and $ec2Details -and $ec2Details[3] -eq "running") {
+        Write-Log "   📊 Obteniendo métricas CloudWatch de $instanceId"
+        
+        $cpuUtilization = Get-CloudWatchMetric `
+            -Namespace "AWS/EC2" `
+            -MetricName "CPUUtilization" `
+            -Dimensions @{InstanceId=$instanceId} `
+            -StartTime $startTime `
+            -EndTime $endTime `
+            -Statistic "Average" `
+            -Period 300
+
+        $networkIn = Get-CloudWatchMetric `
+            -Namespace "AWS/EC2" `
+            -MetricName "NetworkIn" `
+            -Dimensions @{InstanceId=$instanceId} `
+            -StartTime $startTime `
+            -EndTime $endTime `
+            -Statistic "Average" `
+            -Period 300
+
+        $networkOut = Get-CloudWatchMetric `
+            -Namespace "AWS/EC2" `
+            -MetricName "NetworkOut" `
+            -Dimensions @{InstanceId=$instanceId} `
+            -StartTime $startTime `
+            -EndTime $endTime `
+            -Statistic "Average" `
+            -Period 300
+
+        $statusCheckFailed = Get-CloudWatchMetric `
+            -Namespace "AWS/EC2" `
+            -MetricName "StatusCheckFailed" `
+            -Dimensions @{InstanceId=$instanceId} `
+            -StartTime $startTime `
+            -EndTime $endTime `
+            -Statistic "Maximum" `
+            -Period 300
+
+        $instanceObj.CPUUtilization = if($cpuUtilization) { [math]::Round([double]$cpuUtilization, 1) } else { 0 }
+        $instanceObj.NetworkInMB = if($networkIn) { [math]::Round([double]$networkIn / 1048576, 2) } else { 0 }
+        $instanceObj.NetworkOutMB = if($networkOut) { [math]::Round([double]$networkOut / 1048576, 2) } else { 0 }
+        $instanceObj.StatusCheckOK = if($statusCheckFailed -eq 0 -or $null -eq $statusCheckFailed) { $true } else { $false }
+        
+        Write-Log "   ✅ CPU: $($instanceObj.CPUUtilization)% | Net IN: $($instanceObj.NetworkInMB)MB | Net OUT: $($instanceObj.NetworkOutMB)MB"
+    } else {
+        Write-Log "   ⚠️  Instancia no está InService/running - métricas omitidas"
+    }
+
+    # Clasificar instancia
+    $allInstances += $instanceObj
+    
+    if ($lifecycleState -eq "InService" -and $healthStatus -eq "Healthy") {
+        $healthyInstances += $instanceObj
+    } elseif ($lifecycleState -match "Terminat") {
+        $terminatingInstances += $instanceObj
+    } elseif ($healthStatus -eq "Unhealthy") {
+        $unhealthyInstances += $instanceObj
+    } else {
+        $otherStateInstances += $instanceObj
+    }
+}
+
+Write-Log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+Write-Log "📊 RESUMEN DE INSTANCIAS:"
+Write-Log "   ✅ Healthy (InService): $($healthyInstances.Count)"
+Write-Log "   ⚠️  Unhealthy: $($unhealthyInstances.Count)"
+Write-Log "   🔄 Terminando: $($terminatingInstances.Count)"
+Write-Log "   ⚪ Otros estados: $($otherStateInstances.Count)"
+Write-Log "   📦 TOTAL: $($allInstances.Count) / $desiredCapacity deseadas"
+Write-Log "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# =========================================
+# 3. OBTENER EVENTOS RECIENTES DEL ASG
+# =========================================
+Write-Log "📜 Obteniendo eventos recientes del ASG..."
+
+$recentEventsRaw = aws autoscaling describe-scaling-activities `
+    --auto-scaling-group-name $ASG_NAME `
+    --max-records 5 `
+    --region $AWS_REGION `
+    --output json 2>$null
+
+$recentEvents = @()
+if ($recentEventsRaw) {
+    $eventsData = $recentEventsRaw | ConvertFrom-Json
+    foreach ($event in $eventsData.Activities) {
+        $eventTime = [DateTime]::Parse($event.StartTime)
+        $timeDiff = (Get-Date) - $eventTime
+        
+        # Solo eventos de las últimas 6 horas
+        if ($timeDiff.TotalHours -le 6) {
+            $recentEvents += [PSCustomObject]@{
+                Description = $event.Description
+                StatusCode = $event.StatusCode
+                StartTime = $eventTime
+                Cause = $event.Cause
             }
+            
+            Write-Log "   • $($event.StatusCode): $($event.Description) ($($timeDiff.Hours)h ago)"
         }
     }
 }
-Write-Log "✅ $($webInstances.Count) instancias WEB activas"
 
 # =========================================
-# 2. RDS (Métricas expandidas)
+# 4. RDS MÉTRICAS (solo las disponibles)
 # =========================================
-Write-Log "🗄️  DB: Métricas RDS $rdsInstanceId"
+Write-Log "🗄️  Obteniendo métricas RDS: $rdsInstanceId"
 
-# Info básica RDS
 $rdsInfo = aws rds describe-db-instances --db-instance-identifier $rdsInstanceId `
     --query 'DBInstances[0].[DBInstanceIdentifier,DBInstanceStatus,Engine,EngineVersion,DBInstanceClass,Endpoint.Address,Endpoint.Port,AllocatedStorage,MultiAZ,AvailabilityZone]' `
     --output json --region $AWS_REGION 2>$null | ConvertFrom-Json
 
-# Métricas CloudWatch (últimas 6 horas)
-$endTime = Get-Date
-$startTime = $endTime.AddHours(-6)
+if ($rdsInfo) {
+    Write-Log "   ✅ Info RDS obtenida"
+}
 
-$rdsCPU = aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name CPUUtilization `
-    --dimensions Name=DBInstanceIdentifier,Value=$rdsInstanceId `
-    --start-time $startTime.ToString("yyyy-MM-ddTHH:mm:ssZ") `
-    --end-time $endTime.ToString("yyyy-MM-ddTHH:mm:ssZ") --period 3600 --statistics Average `
-    --region $AWS_REGION --query 'Datapoints[0].Average' --output text 2>$null
+Write-Log "   📊 Métricas CloudWatch RDS"
 
-$rdsConnections = aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name DatabaseConnections `
-    --dimensions Name=DBInstanceIdentifier,Value=$rdsInstanceId `
-    --start-time $startTime.ToString("yyyy-MM-ddTHH:mm:ssZ") `
-    --end-time $endTime.ToString("yyyy-MM-ddTHH:mm:ssZ") --period 3600 --statistics Average `
-    --region $AWS_REGION --query 'Datapoints[0].Average' --output text 2>$null
+$rdsCPU = Get-CloudWatchMetric `
+    -Namespace "AWS/RDS" `
+    -MetricName "CPUUtilization" `
+    -Dimensions @{DBInstanceIdentifier=$rdsInstanceId} `
+    -StartTime $startTime `
+    -EndTime $endTime `
+    -Statistic "Average"
 
-$rdsFreeStorage = aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name FreeStorageSpace `
-    --dimensions Name=DBInstanceIdentifier,Value=$rdsInstanceId `
-    --start-time $startTime.ToString("yyyy-MM-ddTHH:mm:ssZ") `
-    --end-time $endTime.ToString("yyyy-MM-ddTHH:mm:ssZ") --period 3600 --statistics Average `
-    --region $AWS_REGION --query 'Datapoints[0].Average' --output text 2>$null
+$rdsConnections = Get-CloudWatchMetric `
+    -Namespace "AWS/RDS" `
+    -MetricName "DatabaseConnections" `
+    -Dimensions @{DBInstanceIdentifier=$rdsInstanceId} `
+    -StartTime $startTime `
+    -EndTime $endTime `
+    -Statistic "Average"
 
-$rdsReadLatency = aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name ReadLatency `
-    --dimensions Name=DBInstanceIdentifier,Value=$rdsInstanceId `
-    --start-time $startTime.ToString("yyyy-MM-ddTHH:mm:ssZ") `
-    --end-time $endTime.ToString("yyyy-MM-ddTHH:mm:ssZ") --period 3600 --statistics Average `
-    --region $AWS_REGION --query 'Datapoints[0].Average' --output text 2>$null
+$rdsFreeStorage = Get-CloudWatchMetric `
+    -Namespace "AWS/RDS" `
+    -MetricName "FreeStorageSpace" `
+    -Dimensions @{DBInstanceIdentifier=$rdsInstanceId} `
+    -StartTime $startTime `
+    -EndTime $endTime `
+    -Statistic "Average"
+
+$rdsReadLatency = Get-CloudWatchMetric `
+    -Namespace "AWS/RDS" `
+    -MetricName "ReadLatency" `
+    -Dimensions @{DBInstanceIdentifier=$rdsInstanceId} `
+    -StartTime $startTime `
+    -EndTime $endTime `
+    -Statistic "Average"
+
+$rdsWriteLatency = Get-CloudWatchMetric `
+    -Namespace "AWS/RDS" `
+    -MetricName "WriteLatency" `
+    -Dimensions @{DBInstanceIdentifier=$rdsInstanceId} `
+    -StartTime $startTime `
+    -EndTime $endTime `
+    -Statistic "Average"
 
 $rdsStatus = [PSCustomObject]@{
-    Name = if($rdsInfo) { $rdsInfo[0] } else { "No encontrado" }
-    Status = if($rdsInfo) { $rdsInfo[1] } else { "Error" }
+    Name = if($rdsInfo) { $rdsInfo[0] } else { "N/A" }
+    Status = if($rdsInfo) { $rdsInfo[1] } else { "unknown" }
     Engine = if($rdsInfo) { "$($rdsInfo[2]) $($rdsInfo[3])" } else { "-" }
     InstanceClass = if($rdsInfo) { $rdsInfo[4] } else { "-" }
     Endpoint = if($rdsInfo) { "$($rdsInfo[5]):$($rdsInfo[6])" } else { "-" }
     Storage = if($rdsInfo) { "$($rdsInfo[7]) GB" } else { "-" }
-    MultiAZ = if($rdsInfo) { if($rdsInfo[8] -eq $true) { "Sí" } else { "No" } } else { "-" }
+    MultiAZ = if($rdsInfo -and $rdsInfo[8] -eq $true) { "✓ Sí" } else { "✗ No" }
     AZ = if($rdsInfo) { $rdsInfo[9] } else { "-" }
-    CPU = if($rdsCPU -and $rdsCPU -ne "None") { [math]::Round([double]$rdsCPU,1) } else { 0 }
-    Connections = if($rdsConnections -and $rdsConnections -ne "None") { [math]::Round([double]$rdsConnections,0) } else { 0 }
-    FreeStorageGB = if($rdsFreeStorage -and $rdsFreeStorage -ne "None") { [math]::Round([double]$rdsFreeStorage/1024/1024/1024,2) } else { 0 }
-    ReadLatencyMs = if($rdsReadLatency -and $rdsReadLatency -ne "None") { [math]::Round([double]$rdsReadLatency*1000,2) } else { 0 }
+    CPU = if($rdsCPU) { [math]::Round([double]$rdsCPU, 1) } else { 0 }
+    Connections = if($rdsConnections) { [math]::Round([double]$rdsConnections, 0) } else { 0 }
+    FreeStorageGB = if($rdsFreeStorage) { [math]::Round([double]$rdsFreeStorage / 1073741824, 2) } else { 0 }
+    ReadLatencyMs = if($rdsReadLatency) { [math]::Round([double]$rdsReadLatency * 1000, 2) } else { 0 }
+    WriteLatencyMs = if($rdsWriteLatency) { [math]::Round([double]$rdsWriteLatency * 1000, 2) } else { 0 }
 }
-Write-Log "✅ RDS: $($rdsStatus.CPU)% CPU | $($rdsStatus.Connections) conexiones | $($rdsStatus.Status)"
+
+Write-Log "   ✅ CPU: $($rdsStatus.CPU)% | Conexiones: $($rdsStatus.Connections) | Storage libre: $($rdsStatus.FreeStorageGB)GB"
 
 # =========================================
-# 3. ALB (Application Load Balancer)
+# 5. ALB MÉTRICAS (solo las disponibles)
 # =========================================
 $albStatus = $null
 $targetHealth = @()
-$htmlTargetRows = ""
 
 if ($albArn) {
-    Write-Log "⚖️  ALB: Métricas del balanceador"
-
-    # Info básica ALB
+    Write-Log "⚖️  Obteniendo métricas ALB"
+    
     $albInfo = aws elbv2 describe-load-balancers `
         --load-balancer-arns $albArn `
-        --query 'LoadBalancers[0].[LoadBalancerName,DNSName,State.Code,Scheme,VpcId]' `
+        --query 'LoadBalancers[0].[LoadBalancerName,DNSName,State.Code,Scheme]' `
         --output json --region $AWS_REGION 2>$null | ConvertFrom-Json
 
     # Target Health
@@ -189,250 +413,1117 @@ if ($albArn) {
     if ($targetGroupArn) {
         $targetHealth = aws elbv2 describe-target-health `
             --target-group-arn $targetGroupArn `
-            --query 'TargetHealthDescriptions[*].[Target.Id,TargetHealth.State]' `
+            --query 'TargetHealthDescriptions[*].[Target.Id,TargetHealth.State,TargetHealth.Reason]' `
             --output json --region $AWS_REGION 2>$null | ConvertFrom-Json
+        
+        $healthyTargets = ($targetHealth | Where-Object { $_[1] -eq "healthy" }).Count
+        $totalTargets = $targetHealth.Count
     }
 
-    $healthyTargets = ($targetHealth | Where-Object { $_[1] -eq "healthy" }).Count
-    $totalTargets = $targetHealth.Count
+    $albShortArn = $albArn -replace '^arn:aws:elasticloadbalancing:[^:]+:[^:]+:loadbalancer/', ''
 
-    # Métricas CloudWatch ALB
-    $albShortArn = $albArn -replace 'arn:aws:elasticloadbalancing:[^:]+:[^:]+:loadbalancer/',''
+    Write-Log "   📊 Métricas CloudWatch ALB"
 
-    $albRequestCount = aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-name RequestCount `
-        --dimensions Name=LoadBalancer,Value=$albShortArn `
-        --start-time $startTime.ToString("yyyy-MM-ddTHH:mm:ssZ") `
-        --end-time $endTime.ToString("yyyy-MM-ddTHH:mm:ssZ") --period 3600 --statistics Sum `
-        --region $AWS_REGION --query 'Datapoints[0].Sum' --output text 2>$null
+    $albRequestCount = Get-CloudWatchMetric `
+        -Namespace "AWS/ApplicationELB" `
+        -MetricName "RequestCount" `
+        -Dimensions @{LoadBalancer=$albShortArn} `
+        -StartTime $startTime `
+        -EndTime $endTime `
+        -Statistic "Sum" `
+        -Period 300
 
-    $albTargetResponseTime = aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-name TargetResponseTime `
-        --dimensions Name=LoadBalancer,Value=$albShortArn `
-        --start-time $startTime.ToString("yyyy-MM-ddTHH:mm:ssZ") `
-        --end-time $endTime.ToString("yyyy-MM-ddTHH:mm:ssZ") --period 3600 --statistics Average `
-        --region $AWS_REGION --query 'Datapoints[0].Average' --output text 2>$null
+    $albTargetResponseTime = Get-CloudWatchMetric `
+        -Namespace "AWS/ApplicationELB" `
+        -MetricName "TargetResponseTime" `
+        -Dimensions @{LoadBalancer=$albShortArn} `
+        -StartTime $startTime `
+        -EndTime $endTime `
+        -Statistic "Average" `
+        -Period 300
 
-    $albHTTP5XX = aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-name HTTPCode_Target_5XX_Count `
-        --dimensions Name=LoadBalancer,Value=$albShortArn `
-        --start-time $startTime.ToString("yyyy-MM-ddTHH:mm:ssZ") `
-        --end-time $endTime.ToString("yyyy-MM-ddTHH:mm:ssZ") --period 3600 --statistics Sum `
-        --region $AWS_REGION --query 'Datapoints[0].Sum' --output text 2>$null
+    $albActiveConnections = Get-CloudWatchMetric `
+        -Namespace "AWS/ApplicationELB" `
+        -MetricName "ActiveConnectionCount" `
+        -Dimensions @{LoadBalancer=$albShortArn} `
+        -StartTime $startTime `
+        -EndTime $endTime `
+        -Statistic "Sum" `
+        -Period 300
 
     $albStatus = [PSCustomObject]@{
-        Name = if($albInfo) { $albInfo[0] } else { "No encontrado" }
+        Name = if($albInfo) { $albInfo[0] } else { "N/A" }
         DNS = if($albInfo) { $albInfo[1] } else { "-" }
-        State = if($albInfo) { $albInfo[2] } else { "Error" }
+        State = if($albInfo) { $albInfo[2] } else { "unknown" }
         Scheme = if($albInfo) { $albInfo[3] } else { "-" }
-        HealthyTargets = $healthyTargets
-        TotalTargets = $totalTargets
-        RequestCount = if($albRequestCount -and $albRequestCount -ne "None") { [math]::Round([double]$albRequestCount,0) } else { 0 }
-        ResponseTimeMs = if($albTargetResponseTime -and $albTargetResponseTime -ne "None") { [math]::Round([double]$albTargetResponseTime*1000,2) } else { 0 }
-        HTTP5XX = if($albHTTP5XX -and $albHTTP5XX -ne "None") { [math]::Round([double]$albHTTP5XX,0) } else { 0 }
+        HealthyTargets = if($healthyTargets) { $healthyTargets } else { 0 }
+        TotalTargets = if($totalTargets) { $totalTargets } else { 0 }
+        HealthPercent = if($totalTargets -gt 0) { [math]::Round(($healthyTargets / $totalTargets) * 100, 0) } else { 0 }
+        RequestCount = if($albRequestCount) { [math]::Round([double]$albRequestCount, 0) } else { 0 }
+        ResponseTimeMs = if($albTargetResponseTime) { [math]::Round([double]$albTargetResponseTime * 1000, 2) } else { 0 }
+        ActiveConnections = if($albActiveConnections) { [math]::Round([double]$albActiveConnections, 0) } else { 0 }
     }
+    
+    Write-Log "   ✅ Targets: $($albStatus.HealthyTargets)/$($albStatus.TotalTargets) | Requests: $($albStatus.RequestCount) | RT: $($albStatus.ResponseTimeMs)ms"
+}
 
-    # Generar filas HTML para target health
+# =========================================
+# 6. CALCULAR SALUD DEL SISTEMA (MEJORADO)
+# =========================================
+$overallHealth = "healthy"
+$healthScore = 100
+$healthIssues = @()
+
+# Verificar déficit de capacidad
+$capacityDeficit = $desiredCapacity - $healthyInstances.Count
+if ($capacityDeficit -gt 0) {
+    $overallHealth = "warning"
+    $healthScore -= (15 * $capacityDeficit)
+    $healthIssues += "❌ Faltan $capacityDeficit instancia(s) - Deseadas: $desiredCapacity, Healthy: $($healthyInstances.Count)"
+}
+
+# Verificar instancias unhealthy
+if ($unhealthyInstances.Count -gt 0) {
+    $overallHealth = "warning"
+    $healthScore -= (10 * $unhealthyInstances.Count)
+    $healthIssues += "⚠️  $($unhealthyInstances.Count) instancia(s) Unhealthy"
+}
+
+# Verificar instancias terminando
+if ($terminatingInstances.Count -gt 0) {
+    if ($overallHealth -ne "critical") { $overallHealth = "warning" }
+    $healthIssues += "🔄 $($terminatingInstances.Count) instancia(s) terminando"
+}
+
+# Verificar CPU alta en instancias healthy
+$highCPUInstances = ($healthyInstances | Where-Object { $_.CPUUtilization -gt 80 }).Count
+if ($highCPUInstances -gt 0) {
+    if ($overallHealth -eq "healthy") { $overallHealth = "warning" }
+    $healthScore -= (10 * $highCPUInstances)
+    $healthIssues += "🔥 $highCPUInstances instancia(s) con CPU alta (>80%)"
+}
+
+# Verificar RDS
+if ($rdsStatus.CPU -gt 80) { 
+    if ($overallHealth -eq "healthy") { $overallHealth = "warning" }
+    $healthScore -= 20
+    $healthIssues += "🗄️  RDS CPU alto ($($rdsStatus.CPU)%)"
+}
+if ($rdsStatus.FreeStorageGB -lt 2) {
+    if ($overallHealth -eq "healthy") { $overallHealth = "warning" }
+    $healthScore -= 15
+    $healthIssues += "💾 Poco storage libre en RDS ($($rdsStatus.FreeStorageGB)GB)"
+}
+
+# Verificar ALB
+if ($albStatus -and $albStatus.HealthPercent -lt 100) { 
+    if ($overallHealth -eq "healthy") { $overallHealth = "warning" }
+    $healthScore -= 15
+    $healthIssues += "⚖️  Targets no sanos en ALB ($($albStatus.HealthyTargets)/$($albStatus.TotalTargets))"
+}
+
+# Caso crítico: sin instancias healthy
+if ($healthyInstances.Count -eq 0) { 
+    $overallHealth = "critical"
+    $healthScore = 0
+    $healthIssues += "🚨 CRÍTICO: Sin instancias web activas"
+}
+
+# Asegurar que healthScore no sea negativo
+if ($healthScore -lt 0) { $healthScore = 0 }
+
+$statusIndicator = switch ($overallHealth) {
+    "healthy" { "🟢" }
+    "warning" { "🟡" }
+    "critical" { "🔴" }
+    default { "⚪" }
+}
+
+$statusColor = switch ($overallHealth) {
+    "healthy" { "#10b981" }
+    "warning" { "#f59e0b" }
+    "critical" { "#ef4444" }
+    default { "#6b7280" }
+}
+
+Write-Log "🎯 Salud del sistema: $healthScore% ($overallHealth)"
+if ($healthIssues.Count -gt 0) {
+    Write-Log "⚠️  Issues detectados:"
+    foreach ($issue in $healthIssues) {
+        Write-Log "     $issue"
+    }
+}
+
+# =========================================
+# 7. GENERAR HTML (CON TODAS LAS INSTANCIAS)
+# =========================================
+
+# Función para generar fila de instancia
+function Get-InstanceRow {
+    param($instance)
+    
+    $uptime = if($instance.LaunchTime) {
+        try {
+            $diff = (Get-Date) - [DateTime]::Parse($instance.LaunchTime)
+            if ($diff.Days -gt 0) { "$($diff.Days)d $($diff.Hours)h" }
+            elseif ($diff.Hours -gt 0) { "$($diff.Hours)h $($diff.Minutes)m" }
+            else { "$($diff.Minutes)m" }
+        } catch { "-" }
+    } else { "-" }
+    
+    # Determinar estado visual
+    $stateClass = "badge-info"
+    $stateText = $instance.LifecycleState
+    
+    if ($instance.IsHealthy) {
+        $stateClass = "badge-success"
+        $stateText = "✓ InService"
+    } elseif ($instance.HealthStatus -eq "Unhealthy") {
+        $stateClass = "badge-error"
+        $stateText = "✗ Unhealthy"
+    } elseif ($instance.LifecycleState -match "Terminat") {
+        $stateClass = "badge-warning"
+        $stateText = "⏳ Terminating"
+    } elseif ($instance.LifecycleState -eq "Pending") {
+        $stateClass = "badge-info"
+        $stateText = "🔄 Pending"
+    }
+    
+    $cpuClass = if($instance.CPUUtilization -gt 80) { "badge-error" } elseif($instance.CPUUtilization -gt 60) { "badge-warning" } else { "badge-success" }
+    
+    $ec2StateClass = switch($instance.EC2State) {
+        "running" { "badge-success" }
+        "stopped" { "badge-error" }
+        "stopping" { "badge-warning" }
+        "terminated" { "badge-error" }
+        default { "badge-info" }
+    }
+    
+    # Row class especial para instancias no healthy
+    $rowClass = if(-not $instance.IsHealthy) { "instance-row unhealthy-instance" } else { "instance-row" }
+    
+    @"
+<tr class="$rowClass">
+    <td><span class="instance-id">$($instance.InstanceId)</span></td>
+    <td><code class="ip-address">$($instance.PrivateIP)</code></td>
+    <td><span class="instance-type">$($instance.InstanceType)</span></td>
+    <td><span class="badge $cpuClass">$($instance.CPUUtilization)%</span></td>
+    <td>↓ $($instance.NetworkInMB) MB<br>↑ $($instance.NetworkOutMB) MB</td>
+    <td><span class="badge $stateClass">$stateText</span></td>
+    <td><span class="badge $ec2StateClass">$($instance.EC2State)</span></td>
+    <td class="uptime">$uptime</td>
+</tr>
+"@
+}
+
+$htmlWebRows = ($allInstances | ForEach-Object { Get-InstanceRow $_ }) -join ""
+
+# Generar eventos recientes HTML
+$htmlRecentEvents = if($recentEvents.Count -gt 0) {
+    ($recentEvents | ForEach-Object {
+        $statusClass = if($_.StatusCode -eq "Successful") { "badge-success" } else { "badge-warning" }
+        $timeAgo = ((Get-Date) - $_.StartTime).Hours
+        @"
+<tr>
+    <td class="uptime">$($_.StartTime.ToString('HH:mm:ss'))</td>
+    <td><span class="badge $statusClass">$($_.StatusCode)</span></td>
+    <td style="font-size: 0.875rem;">$($_.Description)</td>
+</tr>
+"@
+    }) -join ""
+} else {
+    "<tr><td colspan='3' style='text-align: center; color: var(--color-text-dim);'>Sin eventos recientes</td></tr>"
+}
+
+$albSection = ""
+$albStatsCards = ""
+
+if ($albStatus) {
     $htmlTargetRows = ($targetHealth | ForEach-Object {
-        $statusClass = if($_[1] -eq "healthy") { "status-ok" } else { "status-error" }
-        "<tr><td><code>$($_[0])</code></td><td><span class='status $statusClass'>$($_[1])</span></td></tr>"
+        $state = $_[1]
+        $reason = if($_[2]) { $_[2] } else { "-" }
+        $badgeClass = if($state -eq "healthy") { "badge-success" } 
+                      elseif($state -eq "unhealthy") { "badge-error" }
+                      else { "badge-warning" }
+        @"
+<tr>
+    <td><span class="instance-id">$($_[0])</span></td>
+    <td><span class="badge $badgeClass">$state</span></td>
+    <td style="font-size: 0.875rem; color: var(--color-text-dim);">$reason</td>
+</tr>
+"@
     }) -join ""
 
-    Write-Log "✅ ALB: $($albStatus.HealthyTargets)/$($albStatus.TotalTargets) targets sanos | $($albStatus.ResponseTimeMs)ms resp"
-} else {
-    Write-Log "⚠️  ALB no detectado - dashboard sin métricas de balanceo"
-}
-
-# =========================================
-# 4. DASHBOARD HTML PROFESIONAL v3.0
-# =========================================
-$htmlWebRows = ($webInstances | ForEach-Object {
-    $uptime = if($_.LaunchTime) {
-        try {
-            $diff = (Get-Date) - [DateTime]::Parse($_.LaunchTime)
-            "$($diff.Days)d $($diff.Hours)h"
-        } catch {
-            "-"
-        }
-    } else { "-" }
-    "<tr><td><code>$($_.InstanceId)</code></td><td>$($_.PrivateIP)</td><td>$($_.InstanceType)</td><td><span class='status status-ok'>$($_.State)</span></td><td>$uptime</td></tr>"
-}) -join ""
-
-# Sección ALB (solo si existe)
-$albSection = ""
-if ($albStatus) {
     $albSection = @"
-<div class="section">
-<h2>⚖️ Application Load Balancer</h2>
-<div class="alb-card">
-<h3 style="margin-top:0;">$($albStatus.Name)</h3>
-<p><strong>DNS:</strong> <code style="font-size:0.9em;background:rgba(255,255,255,0.2);padding:4px 8px;border-radius:4px;">$($albStatus.DNS)</code></p>
-<p><strong>Estado:</strong> $($albStatus.State) | <strong>Scheme:</strong> $($albStatus.Scheme)</p>
-<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:15px;">
-<div style="background:rgba(255,255,255,0.2);padding:10px;border-radius:8px;"><div style="font-size:1.5em;font-weight:bold;">$($albStatus.RequestCount)</div><div style="font-size:0.8em;">Requests (6h)</div></div>
-<div style="background:rgba(255,255,255,0.2);padding:10px;border-radius:8px;"><div style="font-size:1.5em;font-weight:bold;">$($albStatus.ResponseTimeMs)ms</div><div style="font-size:0.8em;">Avg Response</div></div>
-<div style="background:rgba(255,255,255,0.2);padding:10px;border-radius:8px;"><div style="font-size:1.5em;font-weight:bold;">$($albStatus.HTTP5XX)</div><div style="font-size:0.8em;">5XX Errors</div></div>
-</div>
-</div>
+<section class="dashboard-section">
+    <div class="section-header">
+        <h2 class="section-title">⚖️ Load Balancer</h2>
+        <span class="badge badge-info">ALB</span>
+    </div>
+    
+    <div class="alb-overview">
+        <div class="alb-info-card">
+            <div class="alb-header">
+                <h3>$($albStatus.Name)</h3>
+                <span class="badge badge-success">$($albStatus.State)</span>
+            </div>
+            <div class="alb-dns">
+                <label>DNS Endpoint</label>
+                <code>$($albStatus.DNS)</code>
+            </div>
+            <div class="alb-meta">
+                <span>Scheme: <strong>$($albStatus.Scheme)</strong></span>
+                <span>Health: <strong>$($albStatus.HealthPercent)%</strong></span>
+            </div>
+        </div>
 
-<h3 style="margin-top:20px;color:#2d3748;">Target Group Health</h3>
-<div class="table-container">
-<table><tr><th>Target ID</th><th>Estado</th></tr>$htmlTargetRows</table>
+        <div class="metrics-row">
+            <div class="metric-card metric-primary">
+                <div class="metric-icon">📊</div>
+                <div class="metric-value">$($albStatus.RequestCount)</div>
+                <div class="metric-label">Requests (30 min)</div>
+            </div>
+            <div class="metric-card metric-success">
+                <div class="metric-icon">⚡</div>
+                <div class="metric-value">$($albStatus.ResponseTimeMs)ms</div>
+                <div class="metric-label">Avg Response Time</div>
+            </div>
+            <div class="metric-card metric-info">
+                <div class="metric-icon">🔗</div>
+                <div class="metric-value">$($albStatus.ActiveConnections)</div>
+                <div class="metric-label">Active Connections</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="targets-health">
+        <h3 class="subsection-title">Target Group Health</h3>
+        <div class="table-wrapper">
+            <table class="data-table">
+                <thead><tr><th>Target Instance</th><th>Health Status</th><th>Reason</th></tr></thead>
+                <tbody>$htmlTargetRows</tbody>
+            </table>
+        </div>
+    </div>
+</section>
+"@
+
+    $albStatsCards = @"
+<div class="stat-card">
+    <div class="stat-icon">⚖️</div>
+    <div class="stat-value">$($albStatus.HealthyTargets)/$($albStatus.TotalTargets)</div>
+    <div class="stat-label">Healthy Targets</div>
+    <div class="stat-trend positive">$($albStatus.HealthPercent)%</div>
 </div>
+<div class="stat-card">
+    <div class="stat-icon">⚡</div>
+    <div class="stat-value">$($albStatus.ResponseTimeMs)ms</div>
+    <div class="stat-label">Response Time</div>
 </div>
 "@
 }
 
-# Stats grid adaptativos
-$statsCards = @"
-<div class="stat-card"><div class="stat-number">$($webInstances.Count)</div><div style="color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;">Web Instances</div></div>
-<div class="stat-card"><div class="stat-number">$($rdsStatus.CPU)%</div><div style="color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;">RDS CPU</div></div>
-<div class="stat-card"><div class="stat-number">$($rdsStatus.Connections)</div><div style="color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;">DB Connections</div></div>
-"@
+# Calcular uso promedio de recursos (solo instancias healthy)
+$avgCPU = if($healthyInstances.Count -gt 0) { 
+    [math]::Round(($healthyInstances | Measure-Object -Property CPUUtilization -Average).Average, 1) 
+} else { 0 }
 
-if ($albStatus) {
-    $statsCards += @"
-<div class="stat-card"><div class="stat-number">$($albStatus.HealthyTargets)/$($albStatus.TotalTargets)</div><div style="color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;">Healthy Targets</div></div>
-<div class="stat-card"><div class="stat-number">$($albStatus.ResponseTimeMs)ms</div><div style="color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;">ALB Response</div></div>
-<div class="stat-card"><div class="stat-number">$($albStatus.HTTP5XX)</div><div style="color:#718096;font-size:0.9em;text-transform:uppercase;letter-spacing:1px;">5XX Errors</div></div>
-"@
-}
+$totalNetworkInMB = if($healthyInstances.Count -gt 0) { 
+    [math]::Round(($healthyInstances | Measure-Object -Property NetworkInMB -Sum).Sum, 2) 
+} else { 0 }
+
+$totalNetworkOutMB = if($healthyInstances.Count -gt 0) { 
+    [math]::Round(($healthyInstances | Measure-Object -Property NetworkOutMB -Sum).Sum, 2) 
+} else { 0 }
 
 $reportContent = @"
 <!DOCTYPE html>
-<html><head><title>WordPress Dashboard v3.0</title>
-<meta charset="UTF-8">
-<style>
-body{font-family:'Segoe UI',sans-serif;background:linear-gradient(135deg,#667eea,#764ba2);padding:20px;margin:0;}
-.container{max-width:1200px;margin:0 auto;background:#fff;border-radius:20px;box-shadow:0 20px 40px rgba(0,0,0,0.1);overflow:hidden;}
-.header{background:linear-gradient(135deg,#3182ce,#4299e1);color:white;padding:30px;text-align:center;}
-.header h1{font-size:2.2em;margin:0;}
-.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:20px;padding:25px;}
-.stat-card{background:#fff;border-radius:12px;padding:20px;box-shadow:0 6px 20px rgba(0,0,0,0.08);text-align:center;}
-.stat-number{font-size:2.2em;font-weight:bold;color:#3182ce;margin-bottom:5px;}
-.content{padding:30px;}
-.section{margin-bottom:35px;}
-.section h2{color:#2d3748;font-size:1.5em;margin-bottom:15px;border-left:4px solid #3182ce;padding-left:15px;}
-.table-container{overflow-x:auto;border-radius:12px;box-shadow:0 8px 25px rgba(0,0,0,0.1);}
-table{width:100%;border-collapse:collapse;background:#fff;}
-th{background:linear-gradient(135deg,#3182ce,#4299e1);color:white;padding:15px;font-weight:600;}
-td{padding:15px;border-bottom:1px solid #e2e8f0;}
-tr:hover{background:#f7fafc;}
-.status{padding:6px 12px;border-radius:18px;font-size:13px;font-weight:500;}
-.status-ok{background:#c6f6d5;color:#22543d;}
-.status-error{background:#fed7d7;color:#742a2a;}
-.metrics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px;margin-top:15px;}
-.metric-box{background:linear-gradient(135deg,#48bb78,#38a169);color:white;border-radius:12px;padding:20px;text-align:center;}
-.metric-value{font-size:2em;font-weight:bold;margin-bottom:5px;}
-.alb-card{background:linear-gradient(135deg,#ed8936,#dd6b20);color:white;border-radius:12px;padding:20px;margin-bottom:20px;}
-.footer{text-align:center;padding:25px;background:#f7fafc;border-radius:0 0 20px 20px;margin-top:30px;color:#666;}
-@media (max-width:768px){.stats-grid,.metrics-grid{grid-template-columns:1fr;}}
-</style></head>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Health2You Infrastructure Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --color-primary: #0f172a;
+            --color-secondary: #1e293b;
+            --color-accent: #3b82f6;
+            --color-success: #10b981;
+            --color-warning: #f59e0b;
+            --color-error: #ef4444;
+            --color-text: #e2e8f0;
+            --color-text-dim: #94a3b8;
+            --color-border: #334155;
+            --color-bg-card: #1e293b;
+            --color-bg-elevated: #0f172a;
+            --font-display: 'Outfit', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+            --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+            --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+            --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.5);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: var(--font-display);
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            color: var(--color-text);
+            line-height: 1.6;
+            min-height: 100vh;
+            padding: 2rem;
+        }
+
+        .dashboard-container { max-width: 1400px; margin: 0 auto; }
+
+        .dashboard-header {
+            text-align: center;
+            margin-bottom: 3rem;
+            padding: 2rem;
+            background: var(--color-bg-card);
+            border-radius: 1.5rem;
+            box-shadow: var(--shadow-lg);
+            border: 1px solid var(--color-border);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .dashboard-header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, var(--color-accent), var(--color-success));
+        }
+
+        .dashboard-title {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, #fff, var(--color-text));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .dashboard-subtitle {
+            color: var(--color-text-dim);
+            font-size: 1rem;
+            font-weight: 400;
+        }
+
+        .health-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 1rem;
+            padding: 0.5rem 1rem;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 2rem;
+            font-family: var(--font-mono);
+            font-size: 0.875rem;
+        }
+
+        .health-score {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: $statusColor;
+        }
+
+        .capacity-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-top: 0.75rem;
+            padding: 0.625rem 1.25rem;
+            background: rgba(59, 130, 246, 0.1);
+            border-radius: 2rem;
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            font-family: var(--font-mono);
+            font-size: 0.875rem;
+        }
+
+        .capacity-number {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--color-accent);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 3rem;
+        }
+
+        .stat-card {
+            background: var(--color-bg-card);
+            padding: 1.5rem;
+            border-radius: 1rem;
+            box-shadow: var(--shadow-md);
+            border: 1px solid var(--color-border);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .stat-icon {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+            opacity: 0.9;
+        }
+
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            font-family: var(--font-mono);
+            line-height: 1;
+            margin-bottom: 0.25rem;
+        }
+
+        .stat-label {
+            color: var(--color-text-dim);
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+        }
+
+        .stat-trend {
+            margin-top: 0.5rem;
+            font-size: 0.875rem;
+            font-weight: 600;
+        }
+
+        .stat-trend.positive { color: var(--color-success); }
+
+        .dashboard-section {
+            background: var(--color-bg-card);
+            border-radius: 1.5rem;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: var(--shadow-md);
+            border: 1px solid var(--color-border);
+        }
+
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1.5rem;
+            padding-bottom: 1rem;
+            border-bottom: 2px solid var(--color-border);
+        }
+
+        .section-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .subsection-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--color-text-dim);
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.375rem 0.75rem;
+            border-radius: 0.5rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .badge-success {
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--color-success);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .badge-warning {
+            background: rgba(245, 158, 11, 0.15);
+            color: var(--color-warning);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+
+        .badge-error {
+            background: rgba(239, 68, 68, 0.15);
+            color: var(--color-error);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        .badge-info {
+            background: rgba(59, 130, 246, 0.15);
+            color: var(--color-accent);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+        }
+
+        .table-wrapper {
+            overflow-x: auto;
+            border-radius: 0.75rem;
+            border: 1px solid var(--color-border);
+        }
+
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.875rem;
+        }
+
+        .data-table thead { background: var(--color-bg-elevated); }
+
+        .data-table th {
+            padding: 1rem;
+            text-align: left;
+            font-weight: 600;
+            color: var(--color-text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-size: 0.75rem;
+        }
+
+        .data-table td {
+            padding: 1rem;
+            border-top: 1px solid var(--color-border);
+        }
+
+        .data-table tbody tr { transition: background 0.15s; }
+        .data-table tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
+
+        .unhealthy-instance {
+            background: rgba(239, 68, 68, 0.05) !important;
+            border-left: 3px solid var(--color-error);
+        }
+
+        .unhealthy-instance:hover {
+            background: rgba(239, 68, 68, 0.1) !important;
+        }
+
+        .instance-id {
+            font-family: var(--font-mono);
+            font-size: 0.8125rem;
+            color: var(--color-accent);
+        }
+
+        .ip-address {
+            font-family: var(--font-mono);
+            background: rgba(59, 130, 246, 0.1);
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.375rem;
+            font-size: 0.8125rem;
+        }
+
+        .instance-type {
+            font-family: var(--font-mono);
+            font-weight: 500;
+        }
+
+        .uptime {
+            color: var(--color-text-dim);
+            font-family: var(--font-mono);
+        }
+
+        .rds-info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+            padding: 1.5rem;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 0.75rem;
+            border: 1px solid var(--color-border);
+        }
+
+        .rds-info-item {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .rds-info-item label {
+            font-size: 0.75rem;
+            color: var(--color-text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 600;
+        }
+
+        .rds-info-item strong {
+            font-size: 1rem;
+            font-family: var(--font-mono);
+        }
+
+        .rds-info-item code {
+            font-family: var(--font-mono);
+            background: rgba(59, 130, 246, 0.1);
+            padding: 0.5rem;
+            border-radius: 0.375rem;
+            font-size: 0.8125rem;
+            display: block;
+            overflow-x: auto;
+        }
+
+        .metrics-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 1rem;
+            margin-top: 1.5rem;
+        }
+
+        .metric-card {
+            background: rgba(255, 255, 255, 0.03);
+            padding: 1.25rem;
+            border-radius: 0.75rem;
+            border: 1px solid var(--color-border);
+            text-align: center;
+            transition: all 0.2s;
+        }
+
+        .metric-card:hover {
+            transform: translateY(-2px);
+            border-color: var(--color-accent);
+        }
+
+        .metric-card .metric-icon {
+            font-size: 1.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .metric-card .metric-value {
+            font-size: 1.75rem;
+            font-weight: 700;
+            font-family: var(--font-mono);
+            margin-bottom: 0.25rem;
+        }
+
+        .metric-card .metric-label {
+            font-size: 0.75rem;
+            color: var(--color-text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .metric-primary { border-left: 3px solid var(--color-accent); }
+        .metric-success { border-left: 3px solid var(--color-success); }
+        .metric-warning { border-left: 3px solid var(--color-warning); }
+        .metric-error { border-left: 3px solid var(--color-error); }
+        .metric-info { border-left: 3px solid #6366f1; }
+
+        .alb-overview { margin-bottom: 2rem; }
+
+        .alb-info-card {
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(16, 185, 129, 0.1));
+            padding: 1.5rem;
+            border-radius: 0.75rem;
+            border: 1px solid var(--color-border);
+            margin-bottom: 1.5rem;
+        }
+
+        .alb-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+        }
+
+        .alb-header h3 {
+            font-size: 1.25rem;
+            font-weight: 700;
+        }
+
+        .alb-dns { margin-bottom: 1rem; }
+
+        .alb-dns label {
+            display: block;
+            font-size: 0.75rem;
+            color: var(--color-text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.5rem;
+        }
+
+        .alb-dns code {
+            display: block;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 0.75rem;
+            border-radius: 0.375rem;
+            font-family: var(--font-mono);
+            font-size: 0.875rem;
+            word-break: break-all;
+        }
+
+        .alb-meta {
+            display: flex;
+            gap: 2rem;
+            font-size: 0.875rem;
+            color: var(--color-text-dim);
+        }
+
+        .alert-box {
+            background: rgba(239, 68, 68, 0.1);
+            border: 2px solid var(--color-error);
+            border-radius: 0.75rem;
+            padding: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .alert-box h3 {
+            color: var(--color-error);
+            margin-bottom: 0.5rem;
+            font-size: 1.125rem;
+        }
+
+        .alert-box ul {
+            list-style: none;
+            padding-left: 0;
+        }
+
+        .alert-box li {
+            padding: 0.5rem 0;
+            border-bottom: 1px solid rgba(239, 68, 68, 0.2);
+        }
+
+        .alert-box li:last-child {
+            border-bottom: none;
+        }
+
+        .dashboard-footer {
+            text-align: center;
+            padding: 2rem;
+            color: var(--color-text-dim);
+            font-size: 0.875rem;
+            margin-top: 3rem;
+        }
+
+        .dashboard-footer a {
+            color: var(--color-accent);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        .dashboard-footer a:hover {
+            color: var(--color-success);
+        }
+
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .stat-card, .dashboard-section {
+            animation: fadeInUp 0.5s ease-out backwards;
+        }
+
+        .stat-card:nth-child(1) { animation-delay: 0.1s; }
+        .stat-card:nth-child(2) { animation-delay: 0.15s; }
+        .stat-card:nth-child(3) { animation-delay: 0.2s; }
+        .stat-card:nth-child(4) { animation-delay: 0.25s; }
+        .stat-card:nth-child(5) { animation-delay: 0.3s; }
+
+        @media (max-width: 768px) {
+            body { padding: 1rem; }
+            .dashboard-title { font-size: 1.75rem; }
+            .stats-grid { grid-template-columns: 1fr; }
+            .metrics-row { grid-template-columns: 1fr; }
+            .rds-info-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
 <body>
-<div class="container">
-<div class="header">
-<h1>🏥 Health2You Dashboard v3.0</h1>
-<p style="margin:5px 0 0 0;opacity:0.9;">$(Get-Date -Format 'dd MMMM yyyy - HH:mm:ss')</p>
-</div>
+    <div class="dashboard-container">
+        <header class="dashboard-header">
+            <h1 class="dashboard-title">🏥 Health2You Infrastructure</h1>
+            <p class="dashboard-subtitle">WordPress Production Monitoring Dashboard v3.1</p>
+            <div class="health-indicator">
+                <span>$statusIndicator</span>
+                <span>System Health:</span>
+                <span class="health-score">$healthScore%</span>
+            </div>
+            <div class="capacity-indicator">
+                <span>📦</span>
+                <span>Instancias:</span>
+                <span class="capacity-number">$($healthyInstances.Count)/$desiredCapacity</span>
+                <span>Healthy</span>
+            </div>
+            <p style="margin-top: 1rem; font-family: var(--font-mono); font-size: 0.875rem; color: var(--color-text-dim);">
+                $(Get-Date -Format 'dddd, MMMM dd, yyyy • HH:mm:ss UTC')
+            </p>
+        </header>
 
-<div class="stats-grid">
-$statsCards
+        $(if ($healthIssues.Count -gt 0) { 
+            @"
+<div class="alert-box">
+    <h3>⚠️ Problemas Detectados</h3>
+    <ul>
+        $(($healthIssues | ForEach-Object { "<li>$_</li>" }) -join "")
+    </ul>
 </div>
+"@
+        } else { "" })
 
-<div class="content">
-$albSection
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-icon">✅</div>
+                <div class="stat-value">$($healthyInstances.Count)</div>
+                <div class="stat-label">Healthy Instances</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">⚠️</div>
+                <div class="stat-value">$($unhealthyInstances.Count)</div>
+                <div class="stat-label">Unhealthy Instances</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">💻</div>
+                <div class="stat-value">$avgCPU%</div>
+                <div class="stat-label">Avg CPU Usage</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">🗄️</div>
+                <div class="stat-value">$($rdsStatus.CPU)%</div>
+                <div class="stat-label">RDS CPU</div>
+            </div>
+            $albStatsCards
+        </div>
 
-<div class="section">
-<h2>🌐 WordPress Web Instances (ASG: $ASG_NAME)</h2>
-<div class="table-container">
-<table><tr><th>Instance ID</th><th>IP Privada</th><th>Tipo</th><th>Estado</th><th>Uptime</th></tr>$htmlWebRows</table>
-</div>
-</div>
+        $albSection
 
-<div class="section">
-<h2>🗄️ RDS Database ($($rdsStatus.Name))</h2>
-<div style="background:#f7fafc;border-radius:12px;padding:20px;margin-bottom:15px;">
-<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px;">
-<div><strong>Instancia:</strong> $($rdsStatus.Name)</div>
-<div><strong>Estado:</strong> <span class="status status-ok">$($rdsStatus.Status)</span></div>
-<div><strong>Motor:</strong> $($rdsStatus.Engine)</div>
-<div><strong>Clase:</strong> $($rdsStatus.InstanceClass)</div>
-<div><strong>Storage:</strong> $($rdsStatus.Storage)</div>
-<div><strong>Multi-AZ:</strong> $($rdsStatus.MultiAZ)</div>
-<div style="grid-column:1/-1;"><strong>Endpoint:</strong><br><code style="background:#fff;padding:8px;border-radius:4px;display:inline-block;margin-top:5px;">$($rdsStatus.Endpoint)</code></div>
-</div>
-</div>
+        <section class="dashboard-section">
+            <div class="section-header">
+                <h2 class="section-title">🌐 WordPress Instances</h2>
+                <span class="badge badge-info">ASG: $ASG_NAME</span>
+            </div>
+            
+            <div style="margin-bottom: 1rem; padding: 1rem; background: rgba(255,255,255,0.03); border-radius: 0.5rem;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; font-size: 0.875rem;">
+                    <div>
+                        <span style="color: var(--color-text-dim);">Desired Capacity:</span>
+                        <strong style="color: var(--color-accent); margin-left: 0.5rem;">$desiredCapacity</strong>
+                    </div>
+                    <div>
+                        <span style="color: var(--color-text-dim);">Min/Max:</span>
+                        <strong style="margin-left: 0.5rem;">$minSize / $maxSize</strong>
+                    </div>
+                    <div>
+                        <span style="color: var(--color-text-dim);">Total Instances:</span>
+                        <strong style="margin-left: 0.5rem;">$currentCapacity</strong>
+                    </div>
+                </div>
+            </div>
 
-<h3 style="color:#2d3748;margin-top:20px;">📊 Métricas (últimas 6 horas)</h3>
-<div class="metrics-grid">
-<div class="metric-box">
-<div class="metric-value">$($rdsStatus.CPU)%</div>
-<div style="font-size:0.9em;opacity:0.9;">CPU Utilization</div>
-</div>
-<div class="metric-box">
-<div class="metric-value">$($rdsStatus.Connections)</div>
-<div style="font-size:0.9em;opacity:0.9;">DB Connections</div>
-</div>
-<div class="metric-box">
-<div class="metric-value">$($rdsStatus.FreeStorageGB) GB</div>
-<div style="font-size:0.9em;opacity:0.9;">Free Storage</div>
-</div>
-<div class="metric-box">
-<div class="metric-value">$($rdsStatus.ReadLatencyMs) ms</div>
-<div style="font-size:0.9em;opacity:0.9;">Read Latency</div>
-</div>
-</div>
-</div>
-</div>
+            <div class="table-wrapper">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Instance ID</th>
+                            <th>Private IP</th>
+                            <th>Type</th>
+                            <th>CPU</th>
+                            <th>Network</th>
+                            <th>ASG State</th>
+                            <th>EC2 State</th>
+                            <th>Uptime</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        $htmlWebRows
+                    </tbody>
+                </table>
+            </div>
+        </section>
 
-<div class="footer">
-🤖 <strong>PowerShell Enterprise Monitoring v3.0</strong> - Auto-detección de recursos<br>
-CRON: cada 6h (00:00, 06:00, 12:00, 18:00) + diario 08:00 | <a href="https://github.com/Samuel-reto/Grupo_2" style="color:#3182ce;">GitHub</a>
-</div>
-</div>
-</body></html>
+        <section class="dashboard-section">
+            <div class="section-header">
+                <h2 class="section-title">📜 Recent ASG Events</h2>
+                <span class="badge badge-info">Last 6 hours</span>
+            </div>
+            <div class="table-wrapper">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Status</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        $htmlRecentEvents
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="dashboard-section">
+            <div class="section-header">
+                <h2 class="section-title">🗄️ RDS Database</h2>
+                <span class="badge badge-success">$($rdsStatus.Status)</span>
+            </div>
+
+            <div class="rds-info-grid">
+                <div class="rds-info-item">
+                    <label>Instance ID</label>
+                    <strong>$($rdsStatus.Name)</strong>
+                </div>
+                <div class="rds-info-item">
+                    <label>Engine</label>
+                    <strong>$($rdsStatus.Engine)</strong>
+                </div>
+                <div class="rds-info-item">
+                    <label>Instance Class</label>
+                    <strong>$($rdsStatus.InstanceClass)</strong>
+                </div>
+                <div class="rds-info-item">
+                    <label>Storage</label>
+                    <strong>$($rdsStatus.Storage)</strong>
+                </div>
+                <div class="rds-info-item">
+                    <label>Multi-AZ</label>
+                    <strong>$($rdsStatus.MultiAZ)</strong>
+                </div>
+                <div class="rds-info-item">
+                    <label>Availability Zone</label>
+                    <strong>$($rdsStatus.AZ)</strong>
+                </div>
+                <div class="rds-info-item" style="grid-column: 1 / -1;">
+                    <label>Endpoint</label>
+                    <code>$($rdsStatus.Endpoint)</code>
+                </div>
+            </div>
+
+            <h3 class="subsection-title">📊 Performance Metrics (Last 30 Minutes)</h3>
+            <div class="metrics-row">
+                <div class="metric-card metric-primary">
+                    <div class="metric-icon">💻</div>
+                    <div class="metric-value">$($rdsStatus.CPU)%</div>
+                    <div class="metric-label">CPU Utilization</div>
+                </div>
+                <div class="metric-card metric-success">
+                    <div class="metric-icon">🔗</div>
+                    <div class="metric-value">$($rdsStatus.Connections)</div>
+                    <div class="metric-label">DB Connections</div>
+                </div>
+                <div class="metric-card metric-info">
+                    <div class="metric-icon">💾</div>
+                    <div class="metric-value">$($rdsStatus.FreeStorageGB) GB</div>
+                    <div class="metric-label">Free Storage</div>
+                </div>
+                <div class="metric-card metric-warning">
+                    <div class="metric-icon">📖</div>
+                    <div class="metric-value">$($rdsStatus.ReadLatencyMs) ms</div>
+                    <div class="metric-label">Read Latency</div>
+                </div>
+                <div class="metric-card metric-warning">
+                    <div class="metric-icon">✍️</div>
+                    <div class="metric-value">$($rdsStatus.WriteLatencyMs) ms</div>
+                    <div class="metric-label">Write Latency</div>
+                </div>
+            </div>
+        </section>
+
+        <footer class="dashboard-footer">
+            <p>
+                <strong>WordPress Enterprise Monitoring v3.1 Enhanced</strong><br>
+                Métricas últimos 30 minutos • Detección completa de estado de instancias<br>
+                Actualizado: $(Get-Date -Format 'HH:mm:ss UTC')<br>
+                <a href="https://github.com/Samuel-reto/Grupo_2" target="_blank">GitHub Repository</a>
+            </p>
+        </footer>
+    </div>
+</body>
+</html>
 "@
 
 # =========================================
-# 5. SUBIR S3 + SNS
+# 8. SUBIR Y NOTIFICAR
 # =========================================
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $localPath = "/tmp/wp-dashboard-$timestamp.html"
 $s3Key = "dashboards/wp-dashboard-$timestamp.html"
 
+Write-Log "📤 Subiendo a S3..."
 $reportContent | Out-File -FilePath $localPath -Encoding utf8
-aws s3 cp $localPath s3://$S3_BUCKET/$s3Key --region $AWS_REGION
+aws s3 cp $localPath s3://$S3_BUCKET/$s3Key --region $AWS_REGION --content-type "text/html" 2>&1 | Out-Null
 $dashboardUrl = "https://$S3_BUCKET.s3.amazonaws.com/$s3Key"
 
-# Mensaje SNS adaptativo
 $snsMessage = @"
-📊 WORDPRESS DASHBOARD v3.0 - $(Get-Date -Format 'dd/MM HH:mm')
+$statusIndicator WORDPRESS INFRASTRUCTURE
+$(Get-Date -Format 'dd/MM/yyyy HH:mm:ss')
 
-🌐 WEB INSTANCES: $($webInstances.Count) activas
-🗄️  RDS: $($rdsStatus.CPU)% CPU | $($rdsStatus.Connections) conexiones | $($rdsStatus.Status)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SYSTEM HEALTH: $healthScore%
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📦 ASG CAPACITY: $($healthyInstances.Count)/$desiredCapacity (Min: $minSize, Max: $maxSize)
+   ✅ Healthy: $($healthyInstances.Count)
+   ⚠️  Unhealthy: $($unhealthyInstances.Count)
+   🔄 Terminating: $($terminatingInstances.Count)
+   ⚪ Other: $($otherStateInstances.Count)
+
+🌐 WEB INSTANCES (Healthy):
+   • CPU promedio: $avgCPU%
+   • Network IN: $totalNetworkInMB MB
+   • Network OUT: $totalNetworkOutMB MB
+
+🗄️  RDS: $rdsInstanceId
+   • CPU: $($rdsStatus.CPU)%
+   • Conexiones: $($rdsStatus.Connections)
+   • Storage libre: $($rdsStatus.FreeStorageGB) GB
 "@
 
 if ($albStatus) {
     $snsMessage += @"
 
-⚖️  ALB: $($albStatus.HealthyTargets)/$($albStatus.TotalTargets) targets sanos | $($albStatus.ResponseTimeMs)ms resp
-⚠️  ERRORES: $($albStatus.HTTP5XX) 5XX en últimas 6h
-🔗 ALB DNS: $($albStatus.DNS)
+⚖️  ALB: $($albStatus.Name)
+   • Targets: $($albStatus.HealthyTargets)/$($albStatus.TotalTargets) ($($albStatus.HealthPercent)%)
+   • Response: $($albStatus.ResponseTimeMs)ms
+   • Requests: $($albStatus.RequestCount)
+"@
+}
+
+if ($healthIssues.Count -gt 0) {
+    $snsMessage += @"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️  PROBLEMAS DETECTADOS:
+$($healthIssues | ForEach-Object { "   $_" } | Out-String)
+"@
+}
+
+if ($recentEvents.Count -gt 0) {
+    $snsMessage += @"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📜 EVENTOS RECIENTES (6h):
+$($recentEvents | Select-Object -First 3 | ForEach-Object { "   • $($_.StatusCode): $($_.Description)" } | Out-String)
 "@
 }
 
 $snsMessage += @"
 
-
-📈 DASHBOARD COMPLETO:
-$dashboardUrl
-
----
-Monitoreado: $(Get-Date -Format 'dd/MM/yyyy HH:mm:ss')
+📊 DASHBOARD: $dashboardUrl
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 "@
 
-aws sns publish --topic-arn $SNS_TOPIC_ARN --subject "WP Dashboard v3.0 - $(Get-Date -Format 'dd/MM HH:mm')" --message "$snsMessage" --region $AWS_REGION
+Write-Log "📧 Enviando SNS..."
+aws sns publish --topic-arn $SNS_TOPIC_ARN `
+    --subject "$statusIndicator WordPress [$($healthyInstances.Count)/$desiredCapacity] - $healthScore% - $(Get-Date -Format 'dd/MM HH:mm')" `
+    --message "$snsMessage" `
+    --region $AWS_REGION 2>&1 | Out-Null
 
 Write-Log "✅ Dashboard: $dashboardUrl"
-if ($albStatus) {
-    Write-Log "🎉 MONITOREO COMPLETO: WEB($($webInstances.Count)) | ALB($($albStatus.HealthyTargets)/$($albStatus.TotalTargets)) | RDS($($rdsStatus.CPU)%)"
-} else {
-    Write-Log "🎉 MONITOREO COMPLETO: WEB($($webInstances.Count)) | RDS($($rdsStatus.CPU)%)"
-}
+Write-Log "🎉 COMPLETADO: Salud $healthScore% | Healthy: $($healthyInstances.Count)/$desiredCapacity"
+Write-Log "========================================"
