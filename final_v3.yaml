@@ -1,0 +1,2099 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: 'Infraestructura WordPress COMPLETA: RDS Proxy, WAF IP Whitelist, Auto Scaling, EFS, ALB, Lambda Backups - VERSIÓN CORREGIDA CON SEGURIDAD'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Configuración de Red y Seguridad"
+        Parameters:
+          - KeyName
+          - AdminWhitelistIPs
+      - Label:
+          default: "Configuración de Base de Datos"
+        Parameters:
+          - DBPassword
+          - EnableRDSProxy
+      - Label:
+          default: "Configuración de AMI"
+        Parameters:
+          - LatestAmiId
+          - UseProductionAMI
+          - ProductionAMI
+      - Label:
+          default: "Configuración de Dominio"
+        Parameters:
+          - DomainName
+
+Parameters:
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: vockey
+    Description: Clave SSH para acceso a instancias
+
+  AdminWhitelistIPs:
+    Type: CommaDelimitedList
+    Default: "0.0.0.0/0"
+    Description: "IPs permitidas para wp-admin (ej: 203.0.113.10/32,198.51.100.5/32). Usa 0.0.0.0/0 para permitir todos"
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: Contraseña para RDS MySQL (mínimo 8 caracteres)
+    Default: WordpressDB2026
+
+  EnableRDSProxy:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: "Activar RDS Proxy para mejor gestión de conexiones y escalabilidad"
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+    Description: AMI Ubuntu 22.04 LTS
+
+  UseProductionAMI:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Cambiar a 'true' cuando tengas una AMI de producción lista
+
+  ProductionAMI:
+    Type: String
+    Description: AMI ID de WordPress configurado (dejar vacío hasta tener la AMI de producción)
+    Default: ""
+
+  DomainName:
+    Type: String
+    Default: aglinformatica2.com.es
+    Description: Nombre de dominio personalizado para WordPress
+  
+  MonitoringEmail:
+    Type: String
+    Description: Email para recibir reportes de monitoreo de WordPress
+    Default: ""
+    AllowedPattern: "^$|^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+    ConstraintDescription: Debe ser una dirección de email válida o dejar vacío
+
+Conditions:
+  UseProductionAMICondition: !Equals [!Ref UseProductionAMI, "true"]
+  EnableRDSProxyCondition: !Equals [!Ref EnableRDSProxy, "true"]
+  CreateMonitoringNotifications: !Not [!Equals [!Ref MonitoringEmail, ""]]
+
+Resources:
+  # ============================================
+  # CLOUDWATCH LOG GROUP
+  # ============================================
+  EC2LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ec2/wordpress-instances
+      RetentionInDays: 7
+
+  # ============================================
+  # VPC Y REDES
+  # ============================================
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: WordPress-VPC
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: WordPress-IGW
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Subnets Públicas
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public-Subnet-1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public-Subnet-2
+
+  PublicSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [2, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: Public-Subnet-3
+
+  # Subnets Privadas
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.4.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: Private-Subnet-1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.5.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: Private-Subnet-2
+
+  PrivateSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.6.0/24
+      AvailabilityZone: !Select [2, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: Private-Subnet-3
+
+  # NAT Gateway
+  NATGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: NAT-Gateway-EIP
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NATGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: WordPress-NAT-Gateway
+
+  # Route Tables
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Public-Route-Table
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet3
+      RouteTableId: !Ref PublicRouteTable
+
+  # Route Table PRIVADA
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: Private-Route-Table
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    DependsOn: NATGateway
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet3RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet3
+      RouteTableId: !Ref PrivateRouteTable
+
+  # ============================================
+  # SECURITY GROUPS
+  # ============================================
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: Bastion-SG
+      GroupDescription: Security group for Bastion Host
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH from anywhere
+      Tags:
+        - Key: Name
+          Value: Bastion-SG
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: ALB-SG
+      GroupDescription: Security group for Application Load Balancer
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP from Internet
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS from Internet
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+      Tags:
+        - Key: Name
+          Value: ALB-SG
+
+  WebServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: WebServer-SG
+      GroupDescription: Security group for WordPress web servers
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+          Description: HTTP from ALB only
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref BastionSecurityGroup
+          Description: SSH from Bastion
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+      Tags:
+        - Key: Name
+          Value: WebServer-SG
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: RDS-SG
+      GroupDescription: Security group for RDS MySQL
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref WebServerSecurityGroup
+          Description: MySQL from Web Servers
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref BastionSecurityGroup
+          Description: MySQL from Bastion
+      Tags:
+        - Key: Name
+          Value: RDS-SG
+
+  # RDS PROXY SECURITY GROUP
+  RDSProxySecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: EnableRDSProxyCondition
+    Properties:
+      GroupName: RDS-Proxy-SG
+      GroupDescription: Security group for RDS Proxy
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref WebServerSecurityGroup
+          Description: MySQL from Web Servers
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref BastionSecurityGroup
+          Description: MySQL from Bastion
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          DestinationSecurityGroupId: !Ref RDSSecurityGroup
+          Description: MySQL to RDS
+      Tags:
+        - Key: Name
+          Value: RDS-Proxy-SG
+
+  # Permitir que RDS reciba conexiones desde RDS Proxy
+  RDSSecurityGroupIngressFromProxy:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: EnableRDSProxyCondition
+    Properties:
+      GroupId: !Ref RDSSecurityGroup
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      SourceSecurityGroupId: !Ref RDSProxySecurityGroup
+      Description: MySQL from RDS Proxy
+
+  EFSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: EFS-SG
+      GroupDescription: Security group for EFS Mount Targets
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref WebServerSecurityGroup
+          Description: NFS from Web Servers
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref BastionSecurityGroup
+          Description: NFS from Bastion
+      Tags:
+        - Key: Name
+          Value: EFS-SG
+
+  # ============================================
+  # EFS FILE SYSTEM
+  # ============================================
+  EFSFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+      LifecyclePolicies:
+        - TransitionToIA: AFTER_30_DAYS
+      FileSystemTags:
+        - Key: Name
+          Value: WordPress-EFS
+
+  EFSMountTarget1:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SubnetId: !Ref PrivateSubnet1
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  EFSMountTarget2:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SubnetId: !Ref PrivateSubnet2
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  EFSMountTarget3:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SubnetId: !Ref PrivateSubnet3
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  # ============================================
+  # S3 BUCKETS
+  # ============================================
+  ReportsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'wordpress-reports-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      Tags:
+        - Key: Name
+          Value: WordPress-Reports
+  
+  ReportsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ReportsBucket
+      PolicyDocument:
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource: !Sub '${ReportsBucket.Arn}/*'
+
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'wordpress-backups-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldBackups
+            Status: Enabled
+            ExpirationInDays: 30
+      Tags:
+        - Key: Name
+          Value: WordPress-Backups
+
+  # ============================================
+  # SECRETS MANAGER PARA RDS PROXY
+  # ============================================
+  RDSSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: EnableRDSProxyCondition
+    Properties:
+      Name: !Sub '${AWS::StackName}-rds-credentials'
+      Description: Credenciales RDS para WordPress con RDS Proxy
+      SecretString: !Sub |
+        {
+          "username": "h2ymanager",
+          "password": "${DBPassword}"
+        }
+      Tags:
+        - Key: Name
+          Value: RDS-Proxy-Credentials
+
+  # ============================================
+  # RDS MYSQL
+  # ============================================
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: wordpress-db-subnet-group
+      DBSubnetGroupDescription: Subnet group for RDS in private subnets
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+        - !Ref PrivateSubnet3
+      Tags:
+        - Key: Name
+          Value: WordPress-DB-Subnet-Group
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: wordpress-db
+      DBName: wordpress
+      Engine: mysql
+      EngineVersion: '8.0'
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: 20
+      StorageType: gp2
+      MasterUsername: h2ymanager
+      MasterUserPassword: !Ref DBPassword
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: '03:00-04:00'
+      PreferredMaintenanceWindow: 'sun:04:00-sun:05:00'
+      PubliclyAccessible: false
+      Tags:
+        - Key: Name
+          Value: WordPress-RDS-MySQL
+        - Key: BackupType
+          Value: automated
+
+  # ============================================
+  # RDS PROXY
+  # ============================================
+  RDSProxy:
+    Type: AWS::RDS::DBProxy
+    Condition: EnableRDSProxyCondition
+    Properties:
+      DBProxyName: !Sub '${AWS::StackName}-rds-proxy'
+      EngineFamily: MYSQL
+      Auth:
+        - AuthScheme: SECRETS
+          SecretArn: !Ref RDSSecret
+          IAMAuth: DISABLED
+      RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/LabRole'
+      VpcSubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+        - !Ref PrivateSubnet3
+      VpcSecurityGroupIds:
+        - !Ref RDSProxySecurityGroup
+      RequireTLS: false
+      IdleClientTimeout: 1800
+      Tags:
+        - Key: Name
+          Value: WordPress-RDS-Proxy
+
+  RDSProxyTargetGroup:
+    Type: AWS::RDS::DBProxyTargetGroup
+    Condition: EnableRDSProxyCondition
+    Properties:
+      DBProxyName: !Ref RDSProxy
+      TargetGroupName: default
+      DBInstanceIdentifiers:
+        - !Ref RDSInstance
+      ConnectionPoolConfigurationInfo:
+        MaxConnectionsPercent: 100
+        MaxIdleConnectionsPercent: 50
+        ConnectionBorrowTimeout: 120
+
+  # ============================================
+  # BASTION HOST
+  # ============================================
+  BastionEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: Bastion-EIP
+
+  BastionInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      IamInstanceProfile: LabInstanceProfile
+      SubnetId: !Ref PublicSubnet1
+      SecurityGroupIds:
+        - !Ref BastionSecurityGroup
+      Tags:
+        - Key: Name
+          Value: WordPress-Bastion-Host
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          
+          echo "=== Configurando Bastion Host con PowerShell + datos.sh (AUTOMATIZADO) ==="
+          date
+          
+          # Actualizar sistema
+          apt-get update
+          apt-get install -y mysql-client git awscli nfs-common curl jq
+          
+          # ============================================
+          # INSTALAR POWERSHELL
+          # ============================================
+          echo "=== Instalando PowerShell ==="
+          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/powershell.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/powershell.gpg] https://packages.microsoft.com/ubuntu/22.04/prod jammy main" | tee /etc/apt/sources.list.d/microsoft-powershell.list
+          apt-get update
+          apt-get install -y powershell
+          pwsh --version
+          echo "✅ PowerShell instalado correctamente"
+          
+          # ============================================
+          # INSTALAR SSM AGENT
+          # ============================================
+          echo "=== Instalando SSM Agent ==="
+          snap install amazon-ssm-agent --classic || true
+          systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service
+          systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service
+          
+          # ============================================
+          # CONFIGURAR CLAVE SSH
+          # ============================================
+          echo "=== Configurando acceso SSH a instancias del ASG ==="
+          mkdir -p /home/ubuntu/.ssh
+          
+          cat >> /home/ubuntu/.ssh/config << 'EOF'
+          Host *
+              StrictHostKeyChecking no
+              UserKnownHostsFile=/dev/null
+              LogLevel ERROR
+          EOF
+          
+          chown -R ubuntu:ubuntu /home/ubuntu/.ssh
+          chmod 700 /home/ubuntu/.ssh
+          chmod 600 /home/ubuntu/.ssh/config 2>/dev/null || true
+          
+          # ============================================
+          # DESCARGAR SCRIPT DE MONITOREO DESDE GITHUB
+          # ============================================
+          echo "=== Descargando scripts de monitoreo desde GitHub ==="
+          mkdir -p /opt/wordpress-monitor
+          cd /opt/wordpress-monitor
+          
+          # Descargar monitor principal
+          GITHUB_REPO="https://raw.githubusercontent.com/Samuel-reto/Grupo_2/main"
+          curl -o Monitor-WordPressLogs.ps1 "$GITHUB_REPO/Monitor-WordPressLogs.ps1"
+          chmod +x Monitor-WordPressLogs.ps1
+          
+          # ============================================
+          # CONFIGURAR MONITOREO Y SERVICIO SYSTEMD
+          # ============================================
+          mkdir -p /opt/wordpress-monitor
+          echo "=== Descargando scripts ==="
+          curl -o /opt/wordpress-monitor/datos.sh "$GITHUB_REPO/datos.sh"
+          curl -o /opt/wordpress-monitor/run-monitor.sh "$GITHUB_REPO/run-monitor.sh"
+          curl -o /opt/wordpress-monitor/Monitor-WordPressLogs.ps1 "$GITHUB_REPO/Monitor-WordPressLogs.ps1"
+          
+          chmod +x /opt/wordpress-monitor/*.sh
+          chmod +x /opt/wordpress-monitor/*.ps1
+          
+          # Preparar archivo de log con permisos para el usuario ubuntu
+          touch /var/log/wordpress-monitor.log
+          chown ubuntu:ubuntu /var/log/wordpress-monitor.log
+          chmod 664 /var/log/wordpress-monitor.log
+
+          echo "=== Creando servicio Systemd para datos.sh ==="
+          cat <<EOF > /etc/systemd/system/wp-monitor-config.service
+          [Unit]
+          Description=Configurador Variables WordPress Monitor
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/opt/wordpress-monitor/datos.sh
+          RemainAfterExit=yes
+          User=root
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          systemctl daemon-reload
+          systemctl enable wp-monitor-config.service
+          systemctl start wp-monitor-config.service
+          # ============================================
+          # CONFIGURAR WRAPPER Y CRON JOB
+          # ============================================
+          echo "=== Configurando tarea CRON ==="
+          
+          cat > /opt/wordpress-monitor/run-monitor.sh << 'EOFWRAPPER'
+          #!/bin/bash
+          source /opt/wordpress-monitor/config.env 2>/dev/null || {
+              echo "Error cargando config.env - datos.sh aún configurando..." >&2
+              exit 1
+          }
+          echo "=== $(date) ===" >> /var/log/wordpress-monitor.log
+          /usr/bin/pwsh /opt/wordpress-monitor/Monitor-WordPressLogs.ps1 >> /var/log/wordpress-monitor.log 2>&1
+          echo "$(date): Monitor ejecutado ✅" >> /var/log/wordpress-monitor-cron.log
+          EOFWRAPPER
+          
+          chmod +x /opt/wordpress-monitor/run-monitor.sh
+          chown ubuntu:ubuntu /opt/wordpress-monitor/run-monitor.sh
+          
+          # Crear directorio de logs
+          mkdir -p /var/log
+          touch /var/log/wordpress-monitor.log /var/log/wordpress-monitor-cron.log
+          chown ubuntu:ubuntu /var/log/wordpress-*.log
+          
+          # Configurar CRON
+          (crontab -u ubuntu -l 2>/dev/null || true; echo "0 */6 * * * /opt/wordpress-monitor/run-monitor.sh >> /var/log/wordpress-monitor-cron.log 2>&1"; echo "0 8 * * * /opt/wordpress-monitor/run-monitor.sh >> /var/log/wordpress-monitor-cron.log 2>&1") | crontab -u ubuntu -
+          
+          echo "✅ Tareas CRON configuradas (6h + 8AM)"
+          
+          echo "✅ BASTION + datos.sh + MONITOR CONFIGURADO AUTOMÁTICAMENTE $(date)"
+
+  BastionEIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref BastionInstance
+      EIP: !Ref BastionEIP
+
+  # ============================================
+  # APPLICATION LOAD BALANCER
+  # ============================================
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: AttachGateway
+    Properties:
+      Name: WordPress-ALB
+      Type: application
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+        - !Ref PublicSubnet3
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: WordPress-ALB
+
+  WordPressTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: WordPress-TG
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetType: instance
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /
+      HealthCheckPort: traffic-port
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: 200,302
+      TargetGroupAttributes:
+        - Key: stickiness.enabled
+          Value: 'true'
+        - Key: stickiness.type
+          Value: lb_cookie
+        - Key: stickiness.lb_cookie.duration_seconds
+          Value: '86400'
+      Tags:
+        - Key: Name
+          Value: WordPress-TG
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref WordPressTargetGroup
+
+  # ============================================
+  # ACM Certificate (Validación DNS MANUAL)
+  # ============================================
+  SSLCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      SubjectAlternativeNames:
+        - !Sub 'www.${DomainName}'
+      ValidationMethod: DNS
+      Tags:
+        - Key: Name
+          Value: WordPress-SSL-Certificate
+
+  ALBListenerHTTPS:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn:
+      - SSLCertificate
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-2016-08
+      Certificates:
+        - CertificateArn: !Ref SSLCertificate
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref WordPressTargetGroup
+
+  # ============================================
+  # INSTANCIA INICIAL PARA CREAR AMI - CON SEGURIDAD INTEGRADA
+  # ============================================
+  InitialWebServer:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - RDSInstance
+      - NATGateway
+      - EC2LogGroup
+      - EFSMountTarget1
+      - EFSMountTarget2
+      - EFSMountTarget3
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      IamInstanceProfile: LabInstanceProfile
+      SubnetId: !Ref PrivateSubnet1
+      SecurityGroupIds:
+        - !Ref WebServerSecurityGroup
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -e
+            exec > >(tee /var/log/user-data.log)
+            exec 2>&1
+
+            echo "=== Starting WordPress Initial Server Configuration with EFS + SECURITY ==="
+            date
+
+            if ping -c 3 8.8.8.8 > /dev/null 2>&1; then
+              echo "✅ Internet connectivity OK"
+            else
+              echo "❌ ERROR: No Internet connectivity"
+              exit 1
+            fi
+
+            echo "=== Updating system packages ==="
+            apt-get update -y
+            apt-get upgrade -y
+
+            echo "=== Installing SSM Agent ==="
+            snap install amazon-ssm-agent --classic || true
+            systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service
+            systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service
+
+            echo "=== Installing required packages ==="
+            apt-get install -y apache2 php php-mysql php-curl php-gd php-mbstring php-xml php-xmlrpc php-soap php-intl php-zip wget unzip mysql-client awscli git nfs-common
+
+            echo "=== Creating WordPress directory ==="
+            mkdir -p /var/www/html
+
+            echo "=== Mounting EFS to /var/www/html using NFS4 ==="
+            mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport ${EFSFileSystem}.efs.${AWS::Region}.amazonaws.com:/ /var/www/html
+
+            echo "=== Adding EFS to /etc/fstab for persistent mount ==="
+            echo "${EFSFileSystem}.efs.${AWS::Region}.amazonaws.com:/ /var/www/html nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport,_netdev 0 0" >> /etc/fstab
+
+            echo "=== Verifying EFS mount ==="
+            df -h | grep efs
+            ls -la /var/www/html/
+
+            echo "=== Installing WordPress directly on EFS ==="
+            cd /tmp
+            wget https://wordpress.org/latest.tar.gz
+            tar -xzf latest.tar.gz
+
+            echo "=== Copying WordPress files to EFS-mounted /var/www/html ==="
+            cp -r wordpress/* /var/www/html/
+            rm -f /var/www/html/index.html
+
+            echo "=== Configuring WordPress wp-config.php ==="
+            cp /var/www/html/wp-config-sample.php /var/www/html/wp-config.php
+            sed -i "s/database_name_here/wordpress/" /var/www/html/wp-config.php
+            sed -i "s/username_here/h2ymanager/" /var/www/html/wp-config.php
+            sed -i "s/password_here/${DBPassword}/" /var/www/html/wp-config.php
+            sed -i "s/localhost/${DatabaseEndpoint}/" /var/www/html/wp-config.php
+
+            echo "=== Adding WordPress salt keys ==="
+            curl -s https://api.wordpress.org/secret-key/1.1/salt/ >> /tmp/wp-keys.txt
+            sed -i '/AUTH_KEY/,/NONCE_SALT/d' /var/www/html/wp-config.php
+            sed -i "/DB_COLLATE/r /tmp/wp-keys.txt" /var/www/html/wp-config.php
+
+            echo "=== Adding HTTPS configuration to wp-config.php ==="
+            sed -i "/\/\* That's all/i\\
+            \\
+            \/\/ Configuración HTTPS detrás de ALB\\
+            if (isset(\\\$_SERVER['HTTP_X_FORWARDED_PROTO']) && \\\$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {\\
+                \\\$_SERVER['HTTPS'] = 'on';\\
+            }\\
+            define('WP_HOME', 'https://www.aglinformatica2.com.es');\\
+            define('WP_SITEURL', 'https://www.aglinformatica2.com.es');\\
+            define('FORCE_SSL_ADMIN', true);\\
+            " /var/www/html/wp-config.php
+
+            echo "=== Configuring Apache ==="
+            cat > /etc/apache2/sites-available/wordpress.conf << 'EOFAPACHE'
+            <VirtualHost *:80>
+                ServerAdmin webmaster@localhost
+                DocumentRoot /var/www/html
+                <Directory /var/www/html>
+                    Options FollowSymLinks
+                    AllowOverride All
+                    Require all granted
+                </Directory>
+                ErrorLog /var/log/apache2/error.log
+                CustomLog /var/log/apache2/access.log combined
+            </VirtualHost>
+            EOFAPACHE
+
+            a2ensite wordpress
+            a2dissite 000-default
+            a2enmod rewrite
+            systemctl restart apache2
+
+            echo "=== Installing WP-CLI ==="
+            curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+            chmod +x wp-cli.phar
+            mv wp-cli.phar /usr/local/bin/wp
+
+            echo "=== Installing WordPress via WP-CLI ==="
+            cd /var/www/html
+            sudo -u www-data wp core install \
+              --url="http://${ApplicationLoadBalancer.DNSName}" \
+              --title="WordPress Site" \
+              --admin_user="h2ymanager" \
+              --admin_password="${DBPassword}" \
+              --admin_email="admin@example.com" \
+              --skip-email || echo "WordPress installation attempted"
+
+            # ============================================
+            # BLOQUE CONSOLIDADO: USUARIOS, PLUGINS Y SEGURIDAD
+            # ============================================
+            echo "=== INICIANDO CONFIGURACIÓN DE SEGURIDAD Y PLUGINS ==="
+            set +e 
+            cd /var/www/html
+
+            # 1. Esperar a que la DB esté lista y crear Usuarios (IAW3)
+            echo "=== Esperando conexión a DB ==="
+            until mysqladmin ping -h ${DatabaseEndpoint} -u h2ymanager -p${DBPassword} --silent; do
+                echo "Esperando conexión a base de datos..."
+                sleep 5
+            done
+            echo "✅ Conexión a DB establecida"
+
+            echo "=== Creando usuarios adicionales ==="
+            sudo -u www-data wp user create h2y_editor editor@aglinformatica2.com.es \
+              --role=editor \
+              --user_pass="${DBPassword}" \
+              --allow-root || echo "Usuario editor ya existe"
+            
+            sudo -u www-data wp user create h2y_autor autor@aglinformatica2.com.es \
+              --role=author \
+              --user_pass="${DBPassword}" \
+              --allow-root || echo "Usuario autor ya existe"
+            
+            echo "✅ Usuarios adicionales creados"
+
+            # 2. Instalación de Plugins (Trucos PDF 12, 18, 21)
+            echo "=== Instalando plugins de seguridad ==="
+            sudo -u www-data wp plugin install login-customizer loginizer health-check easy-hide-updates \
+              --activate --allow-root || echo "Algunos plugins ya instalados"
+            echo "✅ Plugins instalados y activados"
+
+            # 3. Configuración del diseño de Login personalizado (Negro + Logo)
+            echo "=== Configurando diseño de login personalizado ==="
+            SITE_URL=$(sudo -u www-data wp option get siteurl --allow-root 2>/dev/null || echo "http://${ApplicationLoadBalancer.DNSName}")
+            LOGO_URL="$SITE_URL/wp-content/themes/health2you/Logo_empresa_grupo_2_sin_fondo.png"
+
+            # Script PHP para configuración serializada
+            cat > /tmp/set_login_config.php << 'EOF_PHP'
+            <?php
+            if (!isset($argv[1])) die("No logo URL provided\n");
+            $options = array (
+              'logincust_templates_control' => 'dark',
+              'logincust_bg_color' => '#000000',
+              'logincust_logo' => $argv[1],
+              'logincust_form_bg_color' => '#000',
+              'logincust_field_bg' => '#222222',
+              'logincust_field_color' => '#777777',
+              'logincust_button_bg' => '#ffffff',
+              'logincust_button_color' => '#000000',
+              'logincust_logo_width' => '150px',
+              'logincust_logo_height' => '150px'
+            );
+            echo serialize($options);
+            EOF_PHP
+
+            # Aplicar configuración
+            SERIALIZED_DATA=$(php /tmp/set_login_config.php "$LOGO_URL" 2>/dev/null || echo "")
+            if [ -n "$SERIALIZED_DATA" ]; then
+              sudo -u www-data wp option update login_customizer_options "$SERIALIZED_DATA" --allow-root || echo "No se pudo actualizar login_customizer"
+              echo "✅ Diseño de login configurado"
+            else
+              echo "⚠️ No se pudo generar configuración de login"
+            fi
+            rm -f /tmp/set_login_config.php
+
+            # 4. Clonar tema desde GitHub
+            echo "=== Clonando tema health2you desde GitHub ==="
+            cd /var/www/html/wp-content/themes/
+            if [ ! -d "health2you" ]; then
+              git clone https://github.com/Samuel-reto/Grupo_2.git health2you || echo "Error clonando repositorio"
+            else
+              echo "Tema health2you ya existe, actualizando..."
+              cd health2you && git pull || echo "No se pudo actualizar repositorio"
+            fi
+
+            # Activar tema
+            sudo -u www-data wp theme activate health2you --allow-root || echo "No se pudo activar tema"
+            echo "✅ Tema health2you clonado y activado"
+
+            # 5. Aplicar trucos de seguridad
+            echo "=== Aplicando configuraciones de seguridad ==="
+            
+            # Truco 10: Deshabilitar edición de archivos desde el panel
+            if ! grep -q "DISALLOW_FILE_EDIT" /var/www/html/wp-config.php; then
+              sed -i "/\/\* That's all/i define('DISALLOW_FILE_EDIT', true);" /var/www/html/wp-config.php
+              echo "✅ Truco 10: Edición de archivos deshabilitada"
+            fi
+
+            # Truco 16: Proteger carpeta de subidas (no ejecución PHP)
+            mkdir -p /var/www/html/wp-content/uploads
+            cat > /var/www/html/wp-content/uploads/.htaccess << 'EOF_HTACCESS_UPLOADS'
+            # Bloquear ejecución de PHP en uploads
+            <Files *.php>
+                deny from all
+            </Files>
+            EOF_HTACCESS_UPLOADS
+            echo "✅ Truco 16: Carpeta uploads protegida"
+
+            # Truco 14: Bloqueo de archivos sensibles en .htaccess
+            if [ ! -f /var/www/html/.htaccess ]; then
+              touch /var/www/html/.htaccess
+            fi
+
+            # Agregar reglas solo si no existen
+            if ! grep -q "wp-config.php" /var/www/html/.htaccess; then
+              cat >> /var/www/html/.htaccess << 'EOF_HTACCESS_MAIN'
+
+            # Proteger wp-config.php (Truco 14)
+            <Files wp-config.php>
+                order allow,deny
+                deny from all
+            </Files>
+
+            # Deshabilitar XML-RPC (prevenir ataques de fuerza bruta)
+            <Files xmlrpc.php>
+                order allow,deny
+                deny from all
+            </Files>
+            EOF_HTACCESS_MAIN
+              echo "✅ Truco 14: Archivos sensibles bloqueados (.htaccess)"
+            fi
+
+            # Ajuste final de permisos
+            echo "=== Ajustando permisos finales ==="
+            chown -R www-data:www-data /var/www/html
+            chmod -R 755 /var/www/html
+            find /var/www/html -type f -exec chmod 644 {} \;
+            chmod 644 /var/www/html/.htaccess 2>/dev/null || true
+            chmod 644 /var/www/html/wp-content/uploads/.htaccess 2>/dev/null || true
+            echo "✅ Permisos ajustados correctamente"
+
+            set -e 
+            # ============================================
+            # FIN BLOQUE CONSOLIDADO
+            # ============================================
+
+            # CREAR BASES DE DATOS ADICIONALES
+            echo "=== Creating Health2You database ==="
+            mysql -h ${DatabaseEndpoint} -u h2ymanager -p${DBPassword} << EOSQL
+            CREATE DATABASE IF NOT EXISTS health2you CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+            SHOW DATABASES;
+            EOSQL
+
+            # Importar SQL si existe
+            if [ -f "/var/www/html/wp-content/themes/health2you/health2you.sql" ]; then
+              echo "=== Importing Health2You database schema ==="
+              mysql -h ${DatabaseEndpoint} -u h2ymanager -p${DBPassword} health2you < /var/www/html/wp-content/themes/health2you/health2you.sql || echo "SQL import failed"
+            fi
+
+            if [ -f "/var/www/html/wp-content/themes/health2you/config.php" ]; then
+              echo "=== Updating Health2You config.php ==="
+              sed -i "s/localhost/${DatabaseEndpoint}/" /var/www/html/wp-content/themes/health2you/config.php
+            fi
+
+            # Importar tablas de citas médicas
+            echo "=== Importing citas_medicas_MYSQL.sql ==="
+            if [ -f "/var/www/html/wp-content/themes/health2you/citas_medicas_MYSQL.sql" ]; then
+              # Crear versión segura del SQL
+              grep -v "DROP DATABASE" /var/www/html/wp-content/themes/health2you/citas_medicas_MYSQL.sql | \
+              grep -v "DROP TABLE" | \
+              grep -v "CREATE DATABASE" | \
+              grep -v "USE " | \
+              grep -v "TRUNCATE" | \
+              sed 's/CREATE TABLE /CREATE TABLE IF NOT EXISTS /g' > /tmp/citas_medicas_safe.sql
+              
+              mysql -h ${DatabaseEndpoint} -u h2ymanager -p${DBPassword} wordpress < /tmp/citas_medicas_safe.sql || echo "Citas import failed"
+              rm -f /tmp/citas_medicas_safe.sql
+            fi
+
+            # Instalar TCPDF
+            echo "=== Installing TCPDF library ==="
+            cd /var/www/html/wp-content/themes/health2you/
+            if [ ! -d "tcpdf" ]; then
+              wget https://github.com/tecnickcom/TCPDF/archive/refs/heads/main.zip -O tcpdf.zip
+              unzip tcpdf.zip
+              mv TCPDF-main tcpdf
+              chmod -R 755 tcpdf
+              rm tcpdf.zip
+              chown -R www-data:www-data tcpdf
+            fi
+
+            # Health check final
+            echo "=== Performing health check ==="
+            sleep 10
+            HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}" http://localhost/ || echo "000")
+
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ]; then
+              echo "✅ WordPress is ready - HTTP $HTTP_CODE"
+            else
+              echo "⚠️ WARNING: Unexpected HTTP code $HTTP_CODE"
+            fi
+
+            echo "=== Initial Server Configuration Complete with SECURITY ===="
+            echo "✅ Usuarios creados: h2y_editor, h2y_autor"
+            echo "✅ Plugins instalados: login-customizer, loginizer, health-check, easy-hide-updates"
+            echo "✅ Seguridad aplicada: Trucos 10, 14, 16"
+            date
+          - DatabaseEndpoint: !If
+              - EnableRDSProxyCondition
+              - !GetAtt RDSProxy.Endpoint
+              - !GetAtt RDSInstance.Endpoint.Address
+      Tags:
+        - Key: Name
+          Value: WordPress-Initial-Server
+        - Key: Purpose
+          Value: CreateAMI
+
+  # ============================================
+  # LAUNCH TEMPLATE PARA AUTO SCALING - CON SEGURIDAD
+  # ============================================
+  WebServerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: WordPress-Launch-Template
+      LaunchTemplateData:
+        ImageId: !If
+          - UseProductionAMICondition
+          - !Ref ProductionAMI
+          - !Ref LatestAmiId
+        InstanceType: t2.micro
+        KeyName: !Ref KeyName
+        IamInstanceProfile:
+          Name: LabInstanceProfile
+        SecurityGroupIds:
+          - !Ref WebServerSecurityGroup
+        UserData:
+          Fn::Base64: !Sub
+            - |
+              #!/bin/bash
+              set -e
+              exec > >(tee /var/log/user-data.log)
+              exec 2>&1
+
+              echo "=== Starting Auto Scaling Instance Configuration with SECURITY ==="
+              date
+
+              if [ ! -f /var/www/html/wp-config.php ]; then
+                echo "=== MODE: Base AMI - Full installation required ==="
+                
+                apt-get update -y
+                snap install amazon-ssm-agent --classic || true
+                systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service
+                systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service
+
+                apt-get install -y apache2 php php-mysql php-curl php-gd php-mbstring php-xml php-xmlrpc php-soap php-intl php-zip wget unzip mysql-client awscli git nfs-common
+
+                mkdir -p /var/www/html
+                mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport ${EFSFileSystem}.efs.${AWS::Region}.amazonaws.com:/ /var/www/html
+                echo "${EFSFileSystem}.efs.${AWS::Region}.amazonaws.com:/ /var/www/html nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport,_netdev 0 0" >> /etc/fstab
+
+                # Configurar Apache
+                cat > /etc/apache2/sites-available/wordpress.conf << 'EOFAPACHE'
+              <VirtualHost *:80>
+                  ServerAdmin webmaster@localhost
+                  DocumentRoot /var/www/html
+                  <Directory /var/www/html>
+                      Options FollowSymLinks
+                      AllowOverride All
+                      Require all granted
+                  </Directory>
+                  ErrorLog /var/log/apache2/error.log
+                  CustomLog /var/log/apache2/access.log combined
+              </VirtualHost>
+              EOFAPACHE
+
+                a2ensite wordpress
+                a2dissite 000-default
+                a2enmod rewrite
+                systemctl restart apache2
+
+                # Instalar WP-CLI si no existe
+                if [ ! -f /usr/local/bin/wp ]; then
+                  echo "=== Installing WP-CLI ==="
+                  curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+                  chmod +x wp-cli.phar
+                  mv wp-cli.phar /usr/local/bin/wp
+                fi
+
+                # ============================================
+                # BLOQUE CONSOLIDADO: SEGURIDAD Y PLUGINS (ASG)
+                # ============================================
+                echo "=== APLICANDO CONFIGURACIÓN DE SEGURIDAD EN ASG ==="
+                set +e 
+                cd /var/www/html
+
+                # Verificar que WordPress esté instalado en EFS
+                if [ -f /var/www/html/wp-config.php ]; then
+                  echo "✅ WordPress detectado en EFS"
+                  
+                  # 1. Verificar/Crear usuarios adicionales
+                  echo "=== Verificando usuarios adicionales ==="
+                  sudo -u www-data wp user get h2y_editor --allow-root > /dev/null 2>&1 || \
+                    sudo -u www-data wp user create h2y_editor editor@aglinformatica2.com.es \
+                      --role=editor \
+                      --user_pass="${DBPassword}" \
+                      --allow-root
+                  
+                  sudo -u www-data wp user get h2y_autor --allow-root > /dev/null 2>&1 || \
+                    sudo -u www-data wp user create h2y_autor autor@aglinformatica2.com.es \
+                      --role=author \
+                      --user_pass="${DBPassword}" \
+                      --allow-root
+                  
+                  echo "✅ Usuarios verificados/creados"
+
+                  # 2. Verificar plugins instalados
+                  echo "=== Verificando plugins ==="
+                  for plugin in login-customizer loginizer health-check easy-hide-updates; do
+                    if ! sudo -u www-data wp plugin is-installed $plugin --allow-root; then
+                      sudo -u www-data wp plugin install $plugin --activate --allow-root
+                    elif ! sudo -u www-data wp plugin is-active $plugin --allow-root; then
+                      sudo -u www-data wp plugin activate $plugin --allow-root
+                    fi
+                  done
+                  echo "✅ Plugins verificados"
+
+                  # 3. Verificar configuración de login
+                  echo "=== Verificando diseño de login ==="
+                  SITE_URL=$(sudo -u www-data wp option get siteurl --allow-root 2>/dev/null || echo "http://${ApplicationLoadBalancer.DNSName}")
+                  LOGO_URL="$SITE_URL/wp-content/themes/health2you/Logo_empresa_grupo_2_sin_fondo.png"
+
+                  cat > /tmp/set_login_config.php << 'EOF_PHP'
+              <?php
+              if (!isset($argv[1])) die("No logo URL provided\n");
+              $options = array (
+                'logincust_templates_control' => 'dark',
+                'logincust_bg_color' => '#000000',
+                'logincust_logo' => $argv[1],
+                'logincust_form_bg_color' => '#000',
+                'logincust_field_bg' => '#222222',
+                'logincust_field_color' => '#777777',
+                'logincust_button_bg' => '#ffffff',
+                'logincust_button_color' => '#000000',
+                'logincust_logo_width' => '150px',
+                'logincust_logo_height' => '150px'
+              );
+              echo serialize($options);
+              EOF_PHP
+
+                  SERIALIZED_DATA=$(php /tmp/set_login_config.php "$LOGO_URL" 2>/dev/null || echo "")
+                  if [ -n "$SERIALIZED_DATA" ]; then
+                    sudo -u www-data wp option update login_customizer_options "$SERIALIZED_DATA" --allow-root 2>/dev/null || true
+                  fi
+                  rm -f /tmp/set_login_config.php
+                  echo "✅ Diseño de login verificado"
+
+                  # 4. Verificar tema
+                  echo "=== Verificando tema health2you ==="
+                  if [ -d /var/www/html/wp-content/themes/health2you ]; then
+                    CURRENT_THEME=$(sudo -u www-data wp theme list --status=active --field=name --allow-root)
+                    if [ "$CURRENT_THEME" != "health2you" ]; then
+                      sudo -u www-data wp theme activate health2you --allow-root || echo "No se pudo activar tema"
+                    fi
+                    echo "✅ Tema health2you activo"
+                  else
+                    echo "⚠️ Tema health2you no encontrado en EFS"
+                  fi
+
+                  # 5. Aplicar trucos de seguridad
+                  echo "=== Verificando configuraciones de seguridad ==="
+                  
+                  # Truco 10: DISALLOW_FILE_EDIT
+                  if ! grep -q "DISALLOW_FILE_EDIT" /var/www/html/wp-config.php; then
+                    sed -i "/\/\* That's all/i define('DISALLOW_FILE_EDIT', true);" /var/www/html/wp-config.php
+                    echo "✅ Truco 10 aplicado"
+                  fi
+
+                  # Truco 16: Proteger uploads
+                  mkdir -p /var/www/html/wp-content/uploads
+                  if [ ! -f /var/www/html/wp-content/uploads/.htaccess ]; then
+                    cat > /var/www/html/wp-content/uploads/.htaccess << 'EOF_HTACCESS_UPLOADS'
+              <Files *.php>
+                  deny from all
+              </Files>
+              EOF_HTACCESS_UPLOADS
+                    echo "✅ Truco 16 aplicado"
+                  fi
+
+                  # Truco 14: Bloquear archivos sensibles
+                  if [ ! -f /var/www/html/.htaccess ]; then
+                    touch /var/www/html/.htaccess
+                  fi
+
+                  if ! grep -q "wp-config.php" /var/www/html/.htaccess; then
+                    cat >> /var/www/html/.htaccess << 'EOF_HTACCESS_MAIN'
+
+              # Proteger wp-config.php
+              <Files wp-config.php>
+                  order allow,deny
+                  deny from all
+              </Files>
+
+              # Deshabilitar XML-RPC
+              <Files xmlrpc.php>
+                  order allow,deny
+                  deny from all
+              </Files>
+              EOF_HTACCESS_MAIN
+                    echo "✅ Truco 14 aplicado"
+                  fi
+
+                  # Permisos finales
+                  chown -R www-data:www-data /var/www/html
+                  chmod -R 755 /var/www/html
+                  find /var/www/html -type f -exec chmod 644 {} \; 2>/dev/null || true
+                  chmod 644 /var/www/html/.htaccess 2>/dev/null || true
+                  chmod 644 /var/www/html/wp-content/uploads/.htaccess 2>/dev/null || true
+                  echo "✅ Permisos ajustados"
+                else
+                  echo "⚠️ WordPress no encontrado en EFS - esperando instalación inicial"
+                fi
+
+                set -e 
+                # ============================================
+                # FIN BLOQUE CONSOLIDADO (ASG)
+                # ============================================
+
+                # Instalar TCPDF si no existe
+                if [ -d /var/www/html/wp-content/themes/health2you ] && [ ! -d /var/www/html/wp-content/themes/health2you/tcpdf ]; then
+                  cd /var/www/html/wp-content/themes/health2you/
+                  wget https://github.com/tecnickcom/TCPDF/archive/refs/heads/main.zip -O tcpdf.zip
+                  unzip tcpdf.zip
+                  mv TCPDF-main tcpdf
+                  chmod -R 755 tcpdf
+                  rm tcpdf.zip
+                  chown -R www-data:www-data tcpdf
+                fi
+
+              else
+                echo "=== MODE: Production AMI - WordPress already exists on EFS ==="
+                if ! mountpoint -q /var/www/html; then
+                  echo "Mounting EFS..."
+                  mount -a
+                fi
+                
+                # ============================================
+                # BLOQUE CONSOLIDADO: SEGURIDAD (Producción AMI)
+                # ============================================
+                echo "=== APLICANDO CONFIGURACIÓN DE SEGURIDAD (Producción AMI) ==="
+                set +e 
+                cd /var/www/html
+
+                if [ -f /var/www/html/wp-config.php ]; then
+                  # Verificar WP-CLI
+                  if [ ! -f /usr/local/bin/wp ]; then
+                    curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+                    chmod +x wp-cli.phar
+                    mv wp-cli.phar /usr/local/bin/wp
+                  fi
+
+                  # Verificar usuarios
+                  sudo -u www-data wp user get h2y_editor --allow-root > /dev/null 2>&1 || \
+                    sudo -u www-data wp user create h2y_editor editor@aglinformatica2.com.es \
+                      --role=editor --user_pass="${DBPassword}" --allow-root
+                  
+                  sudo -u www-data wp user get h2y_autor --allow-root > /dev/null 2>&1 || \
+                    sudo -u www-data wp user create h2y_autor autor@aglinformatica2.com.es \
+                      --role=author --user_pass="${DBPassword}" --allow-root
+
+                  # Verificar plugins
+                  for plugin in login-customizer loginizer health-check easy-hide-updates; do
+                    if ! sudo -u www-data wp plugin is-installed $plugin --allow-root; then
+                      sudo -u www-data wp plugin install $plugin --activate --allow-root
+                    elif ! sudo -u www-data wp plugin is-active $plugin --allow-root; then
+                      sudo -u www-data wp plugin activate $plugin --allow-root
+                    fi
+                  done
+
+                  # Verificar seguridad
+                  grep -q "DISALLOW_FILE_EDIT" /var/www/html/wp-config.php || \
+                    sed -i "/\/\* That's all/i define('DISALLOW_FILE_EDIT', true);" /var/www/html/wp-config.php
+
+                  mkdir -p /var/www/html/wp-content/uploads
+                  [ -f /var/www/html/wp-content/uploads/.htaccess ] || \
+                    echo "<Files *.php>" > /var/www/html/wp-content/uploads/.htaccess && \
+                    echo "    deny from all" >> /var/www/html/wp-content/uploads/.htaccess && \
+                    echo "</Files>" >> /var/www/html/wp-content/uploads/.htaccess
+
+                  [ -f /var/www/html/.htaccess ] || touch /var/www/html/.htaccess
+                  grep -q "wp-config.php" /var/www/html/.htaccess || \
+                    echo -e "\n<Files wp-config.php>\n    order allow,deny\n    deny from all\n</Files>" >> /var/www/html/.htaccess
+
+                  chown -R www-data:www-data /var/www/html
+                  echo "✅ Seguridad verificada en Producción AMI"
+                fi
+
+                set -e
+                # ============================================
+                # FIN BLOQUE CONSOLIDADO (Producción)
+                # ============================================
+                
+                # Verificar TCPDF
+                if [ -d /var/www/html/wp-content/themes/health2you ] && [ ! -d /var/www/html/wp-content/themes/health2you/tcpdf ]; then
+                  cd /var/www/html/wp-content/themes/health2you/
+                  wget https://github.com/tecnickcom/TCPDF/archive/refs/heads/main.zip -O tcpdf.zip
+                  unzip tcpdf.zip
+                  mv TCPDF-main tcpdf
+                  chmod -R 755 tcpdf
+                  rm tcpdf.zip
+                  chown -R www-data:www-data tcpdf
+                fi
+                
+                systemctl restart apache2
+                systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent.service || true
+              fi
+
+              sleep 10
+              HTTP_CODE=$(curl -o /dev/null -s -w "%{http_code}" http://localhost/ || echo "000")
+              echo "Health check: HTTP $HTTP_CODE"
+
+              echo "=== Auto Scaling Instance Ready with SECURITY ==="
+              date
+            - DatabaseEndpoint: !If
+                - EnableRDSProxyCondition
+                - !GetAtt RDSProxy.Endpoint
+                - !GetAtt RDSInstance.Endpoint.Address
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: WordPress-ASG-Instance
+              - Key: AMIType
+                Value: !If [UseProductionAMICondition, "production", "base"]
+
+  # ============================================
+  # AUTO SCALING GROUP
+  # ============================================
+  WebServerAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn:
+      - ApplicationLoadBalancer
+      - WordPressTargetGroup
+    Properties:
+      AutoScalingGroupName: WordPress-ASG
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebServerLaunchTemplate
+        Version: !GetAtt WebServerLaunchTemplate.LatestVersionNumber
+      MinSize: 2
+      MaxSize: 6
+      DesiredCapacity: 3
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+        - !Ref PrivateSubnet3
+      TargetGroupARNs:
+        - !Ref WordPressTargetGroup
+      Tags:
+        - Key: Name
+          Value: WordPress-ASG-Instance
+          PropagateAtLaunch: true
+
+  # ============================================
+  # LAMBDA FUNCTION PARA BACKUPS
+  # ============================================
+  BackupLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: WordPress-Unified-Backup
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !Sub 'arn:aws:iam::${AWS::AccountId}:role/LabRole'
+      Timeout: 600
+      Environment:
+        Variables:
+          EFS_ID: !Ref EFSFileSystem
+          RDS_INSTANCE_ID: !Ref RDSInstance
+          ASG_NAME: !Ref WebServerAutoScalingGroup
+          RETENTION_DAYS: '7'
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          from datetime import datetime, timedelta
+          import os
+
+          rds = boto3.client('rds')
+          ec2 = boto3.client('ec2')
+          efs_client = boto3.client('efs')
+          asg = boto3.client('autoscaling')
+
+          def lambda_handler(event, context):
+              EFS_ID = os.environ['EFS_ID']
+              RDS_INSTANCE_ID = os.environ['RDS_INSTANCE_ID']
+              ASG_NAME = os.environ['ASG_NAME']
+              RETENTION_DAYS = int(os.environ.get('RETENTION_DAYS', 7))
+
+              timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+              results = {'efs': {}, 'rds': {}, 'ec2': {}}
+
+              print("INICIANDO BACKUP")
+
+              # Backup EFS
+              try:
+                  response = efs_client.create_backup(FileSystemId=EFS_ID)
+                  results['efs'] = {'success': True, 'id': response['BackupId']}
+                  print(f"EFS OK: {response['BackupId']}")
+              except Exception as e:
+                  results['efs'] = {'success': False, 'error': str(e)}
+                  print(f"EFS ERROR: {e}")
+
+              # Backup RDS
+              try:
+                  snapshot_id = f"{RDS_INSTANCE_ID}-{timestamp}"
+                  rds.create_db_snapshot(
+                      DBSnapshotIdentifier=snapshot_id,
+                      DBInstanceIdentifier=RDS_INSTANCE_ID,
+                      Tags=[
+                          {'Key': 'BackupType', 'Value': 'automated'},
+                          {'Key': 'Timestamp', 'Value': timestamp}
+                      ]
+                  )
+                  results['rds'] = {'success': True, 'id': snapshot_id}
+                  print(f"RDS OK: {snapshot_id}")
+              except Exception as e:
+                  results['rds'] = {'success': False, 'error': str(e)}
+                  print(f"RDS ERROR: {e}")
+
+              # Backup EC2
+              ami_count = 0
+              try:
+                  asg_response = asg.describe_auto_scaling_groups(
+                      AutoScalingGroupNames=[ASG_NAME]
+                  )
+
+                  if asg_response['AutoScalingGroups']:
+                      instances = asg_response['AutoScalingGroups'][0]['Instances']
+                      instance_ids = [i['InstanceId'] for i in instances if i['LifecycleState'] == 'InService']
+                      print(f"Instancias encontradas en ASG: {instance_ids}")
+
+                      for instance_id in instance_ids:
+                          try:
+                              ami_name = f"backup-{instance_id}-{timestamp}"
+                              response = ec2.create_image(
+                                  InstanceId=instance_id,
+                                  Name=ami_name,
+                                  NoReboot=True,
+                                  TagSpecifications=[{
+                                      'ResourceType': 'image',
+                                      'Tags': [
+                                          {'Key': 'Name', 'Value': ami_name},
+                                          {'Key': 'BackupType', 'Value': 'automated'},
+                                          {'Key': 'Timestamp', 'Value': timestamp}
+                                      ]
+                                  }]
+                              )
+                              ami_count += 1
+                              print(f"EC2 OK: {response['ImageId']} from {instance_id}")
+                          except Exception as e:
+                              print(f"EC2 ERROR {instance_id}: {e}")
+
+                      results['ec2'] = {'success': ami_count > 0, 'count': ami_count}
+              except Exception as e:
+                  results['ec2'] = {'success': False, 'error': str(e)}
+                  print(f"ASG ERROR: {e}")
+
+              # Limpieza
+              cleanup_old_backups(RDS_INSTANCE_ID, RETENTION_DAYS)
+
+              print(f"\nRESUMEN: EFS={results['efs'].get('success')}, RDS={results['rds'].get('success')}, EC2={ami_count} AMIs")
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps(results, default=str)
+              }
+
+          def cleanup_old_backups(rds_instance_id, retention_days):
+              cutoff_date = datetime.now() - timedelta(days=retention_days)
+              try:
+                  snapshots = rds.describe_db_snapshots(
+                      DBInstanceIdentifier=rds_instance_id,
+                      SnapshotType='manual'
+                  )['DBSnapshots']
+
+                  for snapshot in snapshots:
+                      if snapshot['SnapshotCreateTime'].replace(tzinfo=None) < cutoff_date:
+                          try:
+                              rds.delete_db_snapshot(
+                                  DBSnapshotIdentifier=snapshot['DBSnapshotIdentifier']
+                              )
+                              print(f"Eliminado snapshot antiguo: {snapshot['DBSnapshotIdentifier']}")
+                          except Exception as e:
+                              print(f"Error eliminando snapshot: {e}")
+              except Exception as e:
+                  print(f"Error en limpieza: {e}")
+
+  BackupScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: WordPress-Daily-Backup
+      Description: Backup diario a las 3:00 AM UTC
+      ScheduleExpression: 'cron(0 3 * * ? *)'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt BackupLambdaFunction.Arn
+          Id: BackupLambdaTarget
+
+  BackupLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref BackupLambdaFunction
+      Action: 'lambda:InvokeFunction'
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt BackupScheduleRule.Arn
+  
+  # ============================================
+  # LAMBDA REACTIVA (MONITOREO)
+  # ============================================
+  ReactiveMonitorLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-Reactive-Monitor'
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !Sub 'arn:aws:iam::${AWS::AccountId}:role/LabRole'
+      Timeout: 60
+      Environment:
+        Variables:
+          BASTION_ID: !Ref BastionInstance 
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import json
+
+          def lambda_handler(event, context):
+              ssm = boto3.client('ssm')
+              bastion_id = os.environ['BASTION_ID']
+              
+              print(f"Evento detectado. Lanzando monitor en Bastion: {bastion_id}")
+              
+              try:
+                  response = ssm.send_command(
+                      InstanceIds=[bastion_id],
+                      DocumentName="AWS-RunShellScript", 
+                      Parameters={
+                          'commands': ['sudo -u ubuntu /opt/wordpress-monitor/run-monitor.sh']
+                      }
+                  )
+                  
+                  command_id = response['Command']['CommandId']
+                  print(f"Comando enviado exitosamente. ID: {command_id}")
+                  
+                  return {"status": "success", "commandId": command_id}
+                  
+              except Exception as e:
+                  print(f"Error detallado: {str(e)}")
+                  raise e
+
+  EC2StateChangeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: "Dispara monitoreo si una instancia cambia de estado"
+      EventPattern:
+        source:
+          - "aws.ec2"
+        detail-type:
+          - "EC2 Instance State-change Notification"
+        detail:
+          state:
+            - "stopped"
+            - "terminated"
+            - "shutting-down"
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt ReactiveMonitorLambda.Arn
+          Id: "TriggerMonitorLambda"
+
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ReactiveMonitorLambda
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt EC2StateChangeRule.Arn
+
+  # ============================================
+  # AWS WAFv2 CON IP WHITELIST PARA WP-ADMIN
+  # ============================================
+  AdminIPSet:
+    Type: AWS::WAFv2::IPSet
+    Properties:
+      Name: !Sub '${AWS::StackName}-AdminWhitelist'
+      Scope: REGIONAL
+      IPAddressVersion: IPV4
+      Addresses: !Ref AdminWhitelistIPs
+      Description: IPs permitidas para acceder a wp-admin
+      Tags:
+        - Key: Name
+          Value: WordPress-Admin-Whitelist
+
+  WAFWebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub '${AWS::StackName}-WAF'
+      Scope: REGIONAL
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: WordPressWebACL
+      Rules:
+        - Name: AllowWpAdminFromTrustedIPs
+          Priority: 1
+          Statement:
+            AndStatement:
+              Statements:
+                - ByteMatchStatement:
+                    SearchString: "/wp-admin/"
+                    FieldToMatch:
+                      UriPath: {}
+                    TextTransformations:
+                      - Priority: 0
+                        Type: NONE
+                    PositionalConstraint: CONTAINS
+                - IPSetReferenceStatement:
+                    Arn: !GetAtt AdminIPSet.Arn
+          Action:
+            Allow: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: AllowWpAdminFromTrustedIPs
+
+        - Name: WordPressAppRules
+          Priority: 2
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesWordPressRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: WordPressAppRules
+
+        - Name: SQLiRules
+          Priority: 3
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesSQLiRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: SQLiRules
+
+        - Name: XSSRules
+          Priority: 4
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: XSSRules
+
+        - Name: PHPAppRules
+          Priority: 5
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesPHPRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: PHPAppRules
+
+        - Name: RateLimitLogin
+          Priority: 6
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              Limit: 100
+              EvaluationWindowSec: 300
+              AggregateKeyType: IP
+              ScopeDownStatement:
+                ByteMatchStatement:
+                  SearchString: "wp-login.php"
+                  FieldToMatch:
+                    UriPath: {}
+                  TextTransformations:
+                    - Priority: 0
+                      Type: LOWERCASE
+                  PositionalConstraint: CONTAINS
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: RateLimitLogin
+
+        - Name: RateLimitXMLRPC
+          Priority: 7
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              Limit: 50
+              EvaluationWindowSec: 300
+              AggregateKeyType: IP
+              ScopeDownStatement:
+                ByteMatchStatement:
+                  SearchString: "xmlrpc.php"
+                  FieldToMatch:
+                    UriPath: {}
+                  TextTransformations:
+                    - Priority: 0
+                      Type: LOWERCASE
+                  PositionalConstraint: CONTAINS
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: RateLimitXMLRPC
+
+        - Name: BlockWpAdminForEveryoneElse
+          Priority: 8
+          Statement:
+            ByteMatchStatement:
+              SearchString: "/wp-admin/"
+              FieldToMatch:
+                UriPath: {}
+              TextTransformations:
+                - Priority: 0
+                  Type: NONE
+              PositionalConstraint: CONTAINS
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: BlockWpAdminForEveryoneElse
+
+  WAFAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    DependsOn:
+      - ApplicationLoadBalancer
+      - WAFWebACL
+    Properties:
+      ResourceArn: !Ref ApplicationLoadBalancer
+      WebACLArn: !GetAtt WAFWebACL.Arn
+  
+  # ============================================
+  # SNS TOPIC PARA MONITOREO
+  # ============================================
+  MonitoringSNSTopic:
+    Type: AWS::SNS::Topic
+    Condition: CreateMonitoringNotifications
+    Properties:
+      TopicName: !Sub '${AWS::StackName}-WordPress-Monitoring'
+      DisplayName: WordPress Monitoring Alerts
+      Tags:
+        - Key: Name
+          Value: WordPress-Monitoring-Topic
+
+  MonitoringEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: CreateMonitoringNotifications
+    Properties:
+      Protocol: email
+      TopicArn: !Ref MonitoringSNSTopic
+      Endpoint: !Ref MonitoringEmail
+
+# ============================================
+# OUTPUTS
+# ============================================
+Outputs:
+  VPCId:
+    Description: VPC ID
+    Value: !Ref VPC
+
+  BastionInstanceId:
+    Description: ID de la instancia Bastion
+    Value: !Ref BastionInstance
+    Export:
+      Name: !Sub "${AWS::StackName}-BastionId"
+
+  LoadBalancerURL:
+    Description: URL del Application Load Balancer
+    Value: !Sub 'http://${ApplicationLoadBalancer.DNSName}'
+
+  LoadBalancerDNS:
+    Description: DNS del ALB para configurar CNAME
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+
+  BastionPublicIP:
+    Description: IP pública del Bastion Host
+    Value: !Ref BastionEIP
+    Export:
+      Name: !Sub "${AWS::StackName}-BastionPublicIP"
+
+  SSHConnectionCommand:
+    Description: Comando para conectarse al Bastion
+    Value: !Sub 'ssh -i vockey.pem ubuntu@${BastionEIP}'
+
+  RDSEndpoint:
+    Description: Endpoint directo de RDS MySQL
+    Value: !GetAtt RDSInstance.Endpoint.Address
+
+  RDSProxyEndpoint:
+    Condition: EnableRDSProxyCondition
+    Description: Endpoint de RDS Proxy
+    Value: !GetAtt RDSProxy.Endpoint
+
+  DatabaseEndpointUsed:
+    Description: Endpoint que está usando WordPress
+    Value: !If
+      - EnableRDSProxyCondition
+      - !Sub '${RDSProxy.Endpoint} (RDS Proxy ACTIVADO)'
+      - !Sub '${RDSInstance.Endpoint.Address} (RDS Directo)'
+
+  EFSFileSystemId:
+    Description: ID del sistema de archivos EFS
+    Value: !Ref EFSFileSystem
+
+  ReportsBucketName:
+    Description: S3 Bucket para reportes
+    Value: !Ref ReportsBucket
+
+  BackupBucket:
+    Description: S3 Bucket para backups
+    Value: !Ref BackupBucket
+
+  AutoScalingGroupName:
+    Description: Nombre del Auto Scaling Group
+    Value: !Ref WebServerAutoScalingGroup
+
+  InitialServerInstanceId:
+    Description: ID de la instancia inicial
+    Value: !Ref InitialWebServer
+
+  BackupLambdaFunctionName:
+    Description: Función Lambda de backups
+    Value: !Ref BackupLambdaFunction
+
+  CertificateArn:
+    Description: ARN del certificado SSL/TLS
+    Value: !Ref SSLCertificate
+
+  WAFWebACLArn:
+    Description: ARN del WAF Web ACL
+    Value: !GetAtt WAFWebACL.Arn
+
+  AdminIPSetArn:
+    Description: ARN del IP Set para wp-admin
+    Value: !GetAtt AdminIPSet.Arn
+
+  HTTPSLoadBalancerURL:
+    Description: URL HTTPS del ALB
+    Value: !Sub 'https://${ApplicationLoadBalancer.DNSName}'
+
+  MonitoringSNSTopicArn:
+    Condition: CreateMonitoringNotifications
+    Description: ARN del SNS Topic para monitoreo
+    Value: !Ref MonitoringSNSTopic
+    Export:
+      Name: !Sub "${AWS::StackName}-MonitoringSNSTopicArn"
+
+  MonitoringEmailStatus:
+    Description: Estado de las notificaciones por email
+    Value: !If
+      - CreateMonitoringNotifications
+      - !Sub 'Email configurado: ${MonitoringEmail}. IMPORTANTE: Confirma la suscripción.'
+      - 'Email no configurado.'
+
+  SecurityConfigurationSummary:
+    Description: Resumen de configuración de seguridad aplicada
+    Value: |
+      ✅ Usuarios adicionales creados: h2y_editor (editor), h2y_autor (author)
+      ✅ Plugins instalados: login-customizer, loginizer, health-check, easy-hide-updates
+      ✅ Diseño de login personalizado (tema oscuro + logo)
+      ✅ Tema health2you clonado desde GitHub y activado
+      ✅ SEGURIDAD - Truco 10: Edición de archivos deshabilitada (DISALLOW_FILE_EDIT)
+      ✅ SEGURIDAD - Truco 14: Archivos sensibles bloqueados (wp-config.php, xmlrpc.php)
+      ✅ SEGURIDAD - Truco 16: Carpeta uploads protegida (sin ejecución PHP)
+      ✅ Permisos correctos: 755 directorios, 644 archivos, www-data owner
+
+  DeploymentSummary:
+    Description: Resumen del despliegue
+    Value: !Sub
+      - |
+        ✅ INFRAESTRUCTURA COMPLETA DESPLEGADA CON SEGURIDAD
+        ✅ RDS Proxy: ${ProxyStatus}
+        ✅ WAF IP Whitelist: Activado para /wp-admin
+        ✅ Auto Scaling: 2-6 instancias (actual: 3)
+        ✅ Backups automáticos: Diarios 3:00 AM UTC
+        ✅ EFS: Almacenamiento compartido
+        ✅ Seguridad WordPress: Trucos 10, 14, 16 aplicados
+        ⏳ SSL: Pendiente validación DNS
+        🌐 Accede a: http://${ApplicationLoadBalancer.DNSName}
+      - ProxyStatus: !If
+          - EnableRDSProxyCondition
+          - 'ACTIVADO ✅'
+          - 'DESACTIVADO ❌'
