@@ -1,0 +1,25 @@
+/* Botón estilo moderno y ancho total */
+#loginform .button-primary {
+    width: 100% !important;
+    height: 45px !important;
+    background-color: #56a89c !important; /* Ajusta al verde de tu logo */
+    border: none !important;
+    text-shadow: none !important;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1) !important;
+    font-weight: bold !important;
+    margin-top: 20px !important;
+}
+
+/* Suavizar los campos de texto */
+.login form .input {
+    border: 1px solid #e1e1e1 !important;
+    padding: 10px !important;
+    background: #fdfdfd !important;
+    border-radius: 6px !important;
+}
+
+/* Quitar la línea fea que WordPress pone a veces alrededor */
+.login form {
+    border: none !important;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.05) !important;
+}
