@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clínica ASIR - Cita Inteligente</title>
+    <style>
+        /* --- ESTILOS DE LA PÁGINA (FONDO) --- */
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f4f8; margin: 0; }
+        header { background: #0d47a1; color: white; padding: 20px; text-align: center; }
+        .container { max-width: 800px; margin: 40px auto; padding: 20px; background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h2 { color: #0d47a1; }
+        
+        /* --- CHATBOT FLOTANTE --- */
+        /* 1. Botón Redondo */
+        .chat-btn {
+            position: fixed; bottom: 30px; right: 30px;
+            width: 60px; height: 60px;
+            background-color: #1976d2; color: white;
+            border-radius: 50%; border: none;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            font-size: 30px; cursor: pointer;
+            z-index: 1000; transition: transform 0.2s;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .chat-btn:hover { transform: scale(1.1); background-color: #0d47a1; }
+
+        /* 2. Ventana del Chat */
+        .chat-popup {
+            display: none; position: fixed; bottom: 100px; right: 30px;
+            width: 320px; height: 480px;
+            background-color: white; border-radius: 12px;
+            box-shadow: 0 5px 25px rgba(0,0,0,0.2);
+            z-index: 1000; flex-direction: column; overflow: hidden;
+            font-size: 14px; border: 1px solid #e0e0e0;
+        }
+
+        .chat-header {
+            background-color: #1976d2; color: white; padding: 15px;
+            display: flex; justify-content: space-between; align-items: center; font-weight: bold;
+        }
+        .close-btn { background: none; border: none; color: white; font-size: 24px; cursor: pointer; }
+
+        .chat-body { 
+            flex: 1; padding: 15px; overflow-y: auto; background: #e3f2fd; 
+            display: flex; flex-direction: column; gap: 10px;
+        }
+
+        /* Burbujas de mensaje */
+        .msg { padding: 10px 14px; border-radius: 18px; max-width: 85%; line-height: 1.4; word-wrap: break-word; }
+        .bot { background-color: white; color: #333; align-self: flex-start; border-bottom-left-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+        .user { background-color: #1976d2; color: white; align-self: flex-end; border-bottom-right-radius: 4px; box-shadow: 0 1px 2px rgba(0,0,0,0.1); }
+
+        /* Footer (Input y botones) */
+        .chat-footer { padding: 10px; border-top: 1px solid #ddd; display: flex; gap: 5px; background: white; }
+        .chat-footer input { flex: 1; padding: 10px; border: 1px solid #ccc; border-radius: 20px; outline: none; }
+        
+        .btn-icon { background: none; border: none; cursor: pointer; font-size: 20px; padding: 0 6px; transition: 0.2s; }
+        .btn-icon:hover { color: #1976d2; transform: scale(1.1); }
+        .micro-active { color: #d32f2f; animation: pulse 1.5s infinite; }
+        
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.2); } 100% { transform: scale(1); } }
+    </style>
+</head>
+<body>
+
+    <!-- CONTENIDO SIMULADO -->
+    <header><h1>🏥 Panel del Paciente</h1></header>
+    <div class="container">
+        <h2>Hola, Carlos</h2>
+        <p>Bienvenido a tu área privada. Desde aquí puedes gestionar tus informes médicos.</p>
+        <p><strong>NUEVO:</strong> Usa el botón azul de la esquina para pedir cita rápidamente sin rellenar formularios.</p>
+    </div>
+
+    <!-- === CHATBOT === -->
+    <button class="chat-btn" onclick="toggleChat()" title="Pedir Cita">💬</button>
+
+    <div class="chat-popup" id="miChat">
+        <div class="chat-header">
+            <span>Asistente Virtual</span>
+            <button class="close-btn" onclick="toggleChat()">×</button>
+        </div>
+        
+        <div class="chat-body" id="chatBody"></div>
+
+        <div class="chat-footer">
+            <input type="text" id="chatInput" placeholder="Escribe aquí..." onkeypress="handleKeyPress(event)">
+            <button class="btn-icon" id="btnMicro" onclick="activarVoz()" title="Hablar">🎙️</button>
+            <button class="btn-icon" onclick="sendMessage()" title="Enviar">➤</button>
+        </div>
+    </div>
+
+    <!-- === CEREBRO JAVASCRIPT === -->
+    <script>
+        // 1. SIMULACIÓN DE USUARIO LOGUEADO
+        const usuario = "Carlos"; 
+
+        // 2. CONFIGURACIÓN DE VOZ (Speech API)
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        let reconocimiento;
+        
+        if (SpeechRecognition) {
+            reconocimiento = new SpeechRecognition();
+            reconocimiento.lang = 'es-ES';
+            reconocimiento.interimResults = false;
+
+            reconocimiento.onstart = () => {
+                document.getElementById("btnMicro").classList.add("micro-active");
+                document.getElementById("chatInput").placeholder = "Te escucho...";
+            };
+            reconocimiento.onend = () => {
+                document.getElementById("btnMicro").classList.remove("micro-active");
+                document.getElementById("chatInput").placeholder = "Escribe aquí...";
+            };
+            reconocimiento.onresult = (event) => {
+                document.getElementById("chatInput").value = event.results[0][0].transcript;
+                sendMessage();
+            };
+        } else {
+            console.log("Navegador no soporta voz");
+            document.getElementById("btnMicro").style.display = 'none';
+        }
+
+        function activarVoz() { if (reconocimiento) reconocimiento.start(); }
+
+        function botHabla(texto) {
+            if ('speechSynthesis' in window) {
+                window.speechSynthesis.cancel();
+                const locucion = new SpeechSynthesisUtterance(texto);
+                locucion.lang = 'es-ES';
+                window.speechSynthesis.speak(locucion);
+            }
+        }
+
+        // 3. LÓGICA DEL CHAT CON VALIDACIÓN
+        let paso = 0; 
+        let cita = { nombre: usuario, fecha: "", motivo: "" };
+        let chatVisible = false;
+
+        function toggleChat() {
+            const chat = document.getElementById("miChat");
+            chatVisible = !chatVisible;
+            chat.style.display = chatVisible ? "flex" : "none";
+
+            // Saludo inicial solo si está vacío
+            if (chatVisible && document.getElementById("chatBody").innerHTML === "") {
+                setTimeout(() => botTalk(`¡Hola de nuevo, ${usuario}! ¿Qué día te viene bien para la próxima cita?`), 500);
+            }
+        }
+
+        function handleKeyPress(e) { if (e.key === 'Enter') sendMessage(); }
+
+        function sendMessage() {
+            const input = document.getElementById("chatInput");
+            const texto = input.value.trim();
+            if (texto === "") return;
+
+            addMessage(texto, 'user');
+            input.value = "";
+
+            setTimeout(() => procesarLogica(texto), 600);
+        }
+
+        function procesarLogica(texto) {
+            let respuesta = "";
+            let textoLimpio = texto.trim();
+            let textoMin = textoLimpio.toLowerCase();
+
+            switch(paso) {
+                case 0: // --- VALIDACIÓN DE FECHA ---
+                    // Debe tener número (día) O mencionar un día de la semana
+                    // Y debe tener al menos 3 letras para evitar "s", "no", etc.
+                    const diasSemana = ["lunes", "martes", "miércoles", "miercoles", "jueves", "viernes", "sábado", "sabado", "domingo", "mañana", "hoy"];
+                    const tieneNumero = /\d/.test(textoMin);
+                    const esDiaSemana = diasSemana.some(dia => textoMin.includes(dia));
+
+                    if (textoLimpio.length < 3 || (!tieneNumero && !esDiaSemana)) {
+                        botTalk("Eso no parece una fecha válida. Por favor, dime algo como 'Lunes 15' o 'El 12 de Octubre'.");
+                        return; // STOP: No avanzamos de paso
+                    }
+
+                    cita.fecha = textoLimpio;
+                    respuesta = `Entendido, el ${cita.fecha}. ¿Cuál es el motivo de la consulta?`;
+                    paso = 1; 
+                    break;
+
+                case 1: // --- VALIDACIÓN DE MOTIVO ---
+                    // Evitar respuestas de una sola palabra corta o sin sentido
+                    if (textoLimpio.length < 4) {
+                        botTalk("Por favor, detalla un poco más el motivo (ej: 'Dolor de espalda', 'Revisión anual').");
+                        return; // STOP
+                    }
+
+                    cita.motivo = textoLimpio;
+                    respuesta = `Perfecto. Cita por "${cita.motivo}" para el día ${cita.fecha}. ¿Es correcto?`;
+                    paso = 2; 
+                    break;
+
+                case 2: // --- CONFIRMACIÓN ---
+                    if (textoMin.includes("s") || textoMin.includes("ok") || textoMin.includes("val") || textoMin.includes("claro")) {
+                        respuesta = "¡Hecho! Tu cita ha sido reservada en el sistema.";
+                        console.log("--- CITA GUARDADA ---", cita); // Aquí iría el fetch() a PHP
+                        paso = 3; 
+                    } else {
+                        respuesta = "Vaya, empecemos de nuevo. ¿Qué fecha prefieres?";
+                        paso = 0; // Reiniciar
+                    }
+                    break;
+
+                default:
+                    respuesta = "Ya tienes tu cita cerrada. ¡Que tengas buen día!";
+            }
+
+            botTalk(respuesta);
+        }
+
+        // --- FUNCIONES VISUALES ---
+        function botTalk(texto) {
+            addMessage(texto, 'bot');
+            botHabla(texto);
+        }
+
+        function addMessage(texto, sender) {
+            const body = document.getElementById("chatBody");
+            const div = document.createElement("div");
+            div.className = `msg ${sender}`;
+            div.innerText = texto;
+            body.appendChild(div);
+            body.scrollTop = body.scrollHeight;
+        }
+    </script>
+</body>
+</html>
