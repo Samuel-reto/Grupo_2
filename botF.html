@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Clínica ASIR - Chatbot Final</title>
+    <title>Chatbot Cita - Health2You</title>
     <style>
-        /* --- ESTILOS VISUALES --- */
+        /* ESTILOS VISUALES */
         body { font-family: 'Segoe UI', system-ui, sans-serif; background-color: #f0f2f5; margin: 0; }
         header { background: #00695c; color: white; padding: 20px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
         .container { max-width: 800px; margin: 40px auto; padding: 30px; background: white; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
@@ -28,18 +28,17 @@
         }
         .chat-btn:hover { transform: scale(1.1); background-color: #004d40; }
 
-        /* --- NUEVA ETIQUETA DE TEXTO --- */
+        /* ETIQUETA DE TEXTO */
         .chat-tooltip {
             background-color: #333; color: white;
             padding: 8px 15px; border-radius: 20px;
-            margin-right: 15px; /* Separación del botón */
+            margin-right: 15px;
             font-size: 14px; white-space: nowrap;
             box-shadow: 0 2px 10px rgba(0,0,0,0.2);
             position: relative;
             animation: slideInLeft 0.5s ease-out;
             cursor: pointer;
         }
-        /* Flechita apuntando al botón */
         .chat-tooltip::after {
             content: ''; position: absolute; top: 50%; right: -6px; margin-top: -6px;
             border-width: 6px; border-style: solid;
@@ -85,32 +84,38 @@
         .btn-icon:hover { color: #00796b; }
         .micro-active { color: #d32f2f !important; animation: pulse 1.5s infinite; }
         @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.2); } 100% { transform: scale(1); } }
+        
+        .btn-hour { 
+            display: inline-block; margin: 4px; padding: 8px 12px;
+            background: #e7f6ee; border: 1px solid #bfe6d0; border-radius: 8px;
+            cursor: pointer; font-size: 13px; transition: 0.2s;
+        }
+        .btn-hour:hover { background: #d0f0dd; transform: scale(1.05); }
     </style>
 </head>
 <body>
 
-    <header><h1>🏥 Clínica Inteligente ASIR</h1></header>
+    <header><h1>🏥 Health2You - Chatbot Inteligente</h1></header>
     
     <div class="container">
-        <h2>Panel de Usuario: Carlos</h2>
-        <p>Bienvenido a la demostración de tu TFG/Proyecto.</p>
+        <h2>Panel de Cita Urgente</h2>
+        <p>Usa el chatbot para pedir cita de forma rápida y natural.</p>
         <div class="test-panel">
-            <h3>🧪 Pruebas disponibles:</h3>
+            <h3>🧪 Pruebas sugeridas:</h3>
             <ol>
-                <li><strong>Modo Urgencia:</strong> Escribe <em>"Quiero cita lo antes posible"</em> y debería saltarse la pregunta del mes.</li>
-                <li><strong>Pedir cita normal:</strong> Sigue el flujo (Mes > Día > Hora).</li>
-                <li><strong>Prueba de Ocupación:</strong> Pide el día <strong>5</strong> (Lleno) o el <strong>15 a las 10:00</strong> (Ocupada).</li>
+                <li><strong>Modo Urgencia:</strong> Di <em>"Quiero cita lo antes posible"</em></li>
+                <li><strong>Pedir cita normal:</strong> Sigue el flujo (Mes > Día > Hora > Síntomas)</li>
+                <li><strong>Consultar disponibilidad:</strong> Pregunta "¿Qué días están libres?"</li>
+                <li><strong>Ayuda:</strong> Escribe "Ayuda" en cualquier momento</li>
             </ol>
         </div>
     </div>
 
     <!-- UI CHAT CON ETIQUETA -->
     <div class="chat-btn-container">
-        <!-- El texto explicativo -->
         <div class="chat-tooltip" id="chatTooltip" onclick="toggleChat()">
             📝 Rellena tus datos por voz o texto aquí
         </div>
-        <!-- El botón -->
         <button class="chat-btn" onclick="toggleChat()" title="Abrir Chat">💬</button>
     </div>
 
@@ -129,194 +134,323 @@
         </div>
     </div>
 
-    <!-- CÓDIGO JS -->
     <script>
-        // 1. CONFIGURACIÓN
-        const usuario = "Carlos"; 
+        // CONFIGURACIÓN
+        const usuario = "Paciente"; 
         
+        // BASE DE DATOS SIMULADA (febrero 2026)
         const dbCitas = {
             "febrero": {
                 dias_llenos: [2, 5, 12, 14, 20, 25], 
-                horas_ocupadas: { "15": ["10:00", "11:00"], "16": ["09:00", "17:00"] }
+                horas_ocupadas: { 
+                    "15": ["10:00", "11:00"], 
+                    "16": ["09:00", "17:00"],
+                    "18": ["08:30", "16:00"]
+                }
             }
         };
 
-        // 2. SISTEMA DE VOZ
+        // SISTEMA DE VOZ
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         let reconocimiento;
+        
         if (SpeechRecognition) {
             reconocimiento = new SpeechRecognition();
             reconocimiento.lang = 'es-ES';
             reconocimiento.interimResults = false;
+            reconocimiento.continuous = false;
+            
             reconocimiento.onstart = () => {
                 document.getElementById("btnMicro").classList.add("micro-active");
                 document.getElementById("chatInput").placeholder = "Te escucho...";
             };
+            
             reconocimiento.onend = () => {
                 document.getElementById("btnMicro").classList.remove("micro-active");
                 document.getElementById("chatInput").placeholder = "Escribe aquí...";
             };
+            
             reconocimiento.onresult = (e) => {
-                document.getElementById("chatInput").value = e.results[0][0].transcript;
+                const texto = e.results[0][0].transcript;
+                document.getElementById("chatInput").value = texto;
                 sendMessage();
+            };
+            
+            reconocimiento.onerror = (e) => {
+                console.error('Error reconocimiento:', e.error);
+                botTalk('Error con el micrófono. Por favor escribe tu mensaje.');
+                document.getElementById("btnMicro").classList.remove("micro-active");
             };
         } else {
             document.getElementById("btnMicro").style.display = 'none';
         }
-        function activarVoz() { if (reconocimiento) reconocimiento.start(); }
-        function botHabla(t) { if ('speechSynthesis' in window) { window.speechSynthesis.cancel(); let l = new SpeechSynthesisUtterance(t); l.lang='es-ES'; window.speechSynthesis.speak(l); } }
+        
+        function activarVoz() { 
+            if (reconocimiento) {
+                try {
+                    reconocimiento.start(); 
+                } catch (e) {
+                    console.error('Error al iniciar reconocimiento:', e);
+                    botTalk('No pude activar el micrófono. Usa el teclado.');
+                }
+            }
+        }
+        
+        function botHabla(t) { 
+            if ('speechSynthesis' in window) { 
+                window.speechSynthesis.cancel(); 
+                const l = new SpeechSynthesisUtterance(t); 
+                l.lang='es-ES'; 
+                l.rate = 1.0;
+                l.pitch = 1.0;
+                window.speechSynthesis.speak(l); 
+            } 
+        }
 
-        // 3. ESTADO DEL CHAT
-        let paso = 0; 
-        let cita = { mes: "", dia: "", hora: "", motivo: "" };
+        // ESTADO DEL CHAT
+        let paso = 0; // 0=mes, 1=día, 2=hora, 3=síntomas, 4=confirmación
+        let cita = { mes: "", dia: "", hora: "", sintomas: "" };
         let chatVisible = false;
 
         function toggleChat() {
             const chat = document.getElementById("miChat");
-            const tooltip = document.getElementById("chatTooltip"); // Seleccionamos la etiqueta
+            const tooltip = document.getElementById("chatTooltip");
             
             chatVisible = !chatVisible;
             chat.style.display = chatVisible ? "flex" : "none";
             
-            // Ocultar la etiqueta si abrimos el chat
             if (chatVisible) {
                 tooltip.style.display = "none";
                 if (document.getElementById("chatBody").innerHTML === "") {
-                    setTimeout(() => botTalk(`¡Hola ${usuario}! ¿Para qué mes quieres pedir cita?`), 500);
+                    setTimeout(() => botTalk(`¡Hola ${usuario}! ¿Para qué mes quieres pedir cita? O di "urgente" para la cita más próxima.`), 500);
                 }
+                document.getElementById("chatInput").focus();
             } else {
-                // Volver a mostrar si cerramos (opcional, puedes quitar el else si prefieres que no vuelva)
                 tooltip.style.display = "block"; 
             }
         }
 
-        function handleKeyPress(e) { if (e.key === 'Enter') sendMessage(); }
+        function handleKeyPress(e) { 
+            if (e.key === 'Enter') sendMessage(); 
+        }
 
         function sendMessage() {
             const input = document.getElementById("chatInput");
             const texto = input.value.trim();
             if (!texto) return;
+            
+            // Validación básica de longitud
+            if (texto.length > 500) {
+                botTalk('Mensaje demasiado largo. Por favor, sé más breve.');
+                return;
+            }
+            
             addMessage(texto, 'user');
             input.value = "";
             setTimeout(() => cerebroBot(texto), 600);
         }
 
-        // --- CEREBRO INTELIGENTE ---
+        // CEREBRO INTELIGENTE MEJORADO
         function cerebroBot(texto) {
-            let txt = texto.toLowerCase();
-            let respuesta = "";
-
-            // 1. INTERCEPTOR DE URGENCIA
-            if (txt.includes("antes posible") || txt.includes("pronto") || txt.includes("cercano") || txt.includes("urgente")) {
-                let primerDiaLibre = 0;
-                for (let d = 1; d <= 28; d++) {
-                    if (!dbCitas.febrero.dias_llenos.includes(d)) { primerDiaLibre = d; break; }
-                }
-
-                if (primerDiaLibre > 0) {
-                    cita.mes = "febrero"; cita.dia = primerDiaLibre; cita.hora = "09:00"; 
-                    respuesta = `📅 He buscado hueco y lo más pronto es el **${cita.dia} de Febrero a las 09:00**. ¿Te lo reservo? (Dime el motivo si te vale, o di 'No')`;
-                    paso = 3; 
-                } else {
-                    respuesta = "Lo siento, este mes está completísimo.";
-                }
-                botTalk(respuesta);
-                return; 
-            }
-
-            // 2. INTERCEPTOR DE DISPONIBILIDAD
-            if (txt.includes("libre") || txt.includes("disponible")) {
-                respuesta = "En Febrero tengo casi todo libre excepto los días 2, 5, 12, 14, 20 y 25.";
-                botTalk(respuesta);
+            // Sanitización y normalización
+            let txt = texto.toLowerCase()
+                .replace(/<script.*?<\/script>/gi, '')
+                .replace(/[<>]/g, '')
+                .trim();
+            
+            if (!txt) {
+                botTalk('No he entendido. ¿Puedes repetir?');
                 return;
             }
 
-            // 3. FLUJO NORMAL
+            // Comando ayuda
+            if (txt === 'ayuda' || txt === '?') {
+                botTalk('Puedes:<br>• Decir "urgente" o "lo antes posible"<br>• Seguir el flujo normal: Mes → Día → Hora → Síntomas<br>• Preguntar "¿qué días están libres?"<br>• Escribir "cancelar" para reiniciar');
+                return;
+            }
+
+            // Comando cancelar
+            if (txt.includes('cancelar') || txt.includes('reiniciar') || txt.includes('empezar')) {
+                resetBot();
+                return;
+            }
+
+            // INTERCEPTOR DE URGENCIA
+            if (txt.includes("antes posible") || txt.includes("pronto") || txt.includes("cercano") || txt.includes("urgente")) {
+                let primerDiaLibre = 0;
+                for (let d = 1; d <= 28; d++) {
+                    if (!dbCitas.febrero.dias_llenos.includes(d)) { 
+                        primerDiaLibre = d; 
+                        break; 
+                    }
+                }
+
+                if (primerDiaLibre > 0) {
+                    cita.mes = "febrero"; 
+                    cita.dia = primerDiaLibre; 
+                    cita.hora = "09:00"; 
+                    botTalk(`📅 El primer hueco disponible es el <strong>${cita.dia} de Febrero a las 09:00</strong>. ¿Cuáles son tus síntomas? (o di "sin síntomas")`);
+                    paso = 3; 
+                } else {
+                    botTalk("Lo siento, este mes está completísimo. Contacta con recepción.");
+                }
+                return; 
+            }
+
+            // INTERCEPTOR DE DISPONIBILIDAD
+            if (txt.includes("libre") || txt.includes("disponible") || txt.includes("qué días")) {
+                const disponibles = [];
+                for (let d = 1; d <= 28; d++) {
+                    if (!dbCitas.febrero.dias_llenos.includes(d)) {
+                        disponibles.push(d);
+                    }
+                }
+                if (disponibles.length > 0) {
+                    botTalk(`En Febrero hay muchos días libres. Los días <strong>2, 5, 12, 14, 20 y 25</strong> están completos. El resto tiene disponibilidad.`);
+                } else {
+                    botTalk("Febrero está prácticamente completo.");
+                }
+                return;
+            }
+
+            // FLUJO NORMAL
             switch(paso) {
                 case 0: // MES
                     if (txt.includes("febrero")) {
                         cita.mes = "febrero";
-                        respuesta = "Febrero, entendido. ¿Qué día quieres venir? (Dime el número, ej: 15)";
+                        botTalk("Febrero, entendido. ¿Qué día quieres venir? Dime el número (ej: 15)");
                         paso = 1;
-                    } else if (txt.includes("enero") || txt.includes("marzo")) {
-                        respuesta = "Para ese mes no tengo la agenda abierta. Prueba con Febrero.";
+                    } else if (txt.includes("enero") || txt.includes("marzo") || txt.includes("abril")) {
+                        botTalk("Para ese mes no tengo la agenda abierta aún. Prueba con Febrero.");
                     } else {
-                        respuesta = "Por favor, dime un mes válido (ej: Febrero).";
+                        botTalk("Por favor, dime un mes válido. Por ahora solo tengo Febrero disponible.");
                     }
                     break;
 
                 case 1: // DÍA
                     let numDia = txt.match(/\d+/);
                     if (!numDia) {
-                        respuesta = "Necesito el número del día (ej: 10).";
-                    } else {
-                        let dia = parseInt(numDia[0]);
-                        if (dia < 1 || dia > 29) {
-                             respuesta = "Ese día no existe. Dime uno del 1 al 28.";
-                        } else if (dbCitas.febrero.dias_llenos.includes(dia)) {
-                             respuesta = `❌ El día ${dia} está COMPLETO. Por favor, elige otro.`;
-                        } else {
-                             cita.dia = dia;
-                             respuesta = `✅ El día ${dia} tengo sitio. ¿A qué hora? (Ej: 10:00, 17:30)`;
-                             paso = 2;
-                        }
+                        botTalk("Necesito el número del día (del 1 al 28 para febrero).");
+                        return;
                     }
+                    
+                    let dia = parseInt(numDia[0]);
+                    if (isNaN(dia) || dia < 1 || dia > 28) {
+                         botTalk("Ese día no es válido para febrero. Dame un número del 1 al 28.");
+                         return;
+                    }
+                    
+                    if (dbCitas.febrero.dias_llenos.includes(dia)) {
+                         botTalk(`❌ El día <strong>${dia}</strong> está COMPLETO. Por favor, elige otro día.`);
+                         return;
+                    }
+                    
+                    cita.dia = dia;
+                    const horasDisponibles = ["08:30", "09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "16:00", "16:30", "17:00", "17:30", "18:00"];
+                    const horasOcupadas = dbCitas.febrero.horas_ocupadas[dia.toString()] || [];
+                    const huecos = horasDisponibles.filter(h => !horasOcupadas.includes(h));
+                    
+                    if (huecos.length === 0) {
+                        botTalk(`El día ${dia} no tiene huecos disponibles. Elige otro día.`);
+                        paso = 1;
+                        return;
+                    }
+                    
+                    botTalk(`✅ El día <strong>${dia}</strong> tengo sitio. ¿A qué hora? (Ej: 10:00, 17:30)<br><br>` +
+                            huecos.slice(0, 8).map(h => `<button class="btn-hour" onclick="setHora('${h}')">${h}</button>`).join(''));
+                    paso = 2;
                     break;
 
                 case 2: // HORA
-                    let horaMatch = txt.match(/(\d{1,2})(:(\d{2}))?/);
+                    let horaMatch = txt.match(/(\d{1,2}):?(\d{2})?/);
                     if (!horaMatch) {
-                        respuesta = "Dime una hora válida (ej: 09:30).";
-                    } else {
-                        let horaRaw = horaMatch[0];
-                        if (!horaRaw.includes(":")) horaRaw += ":00";
-                        if (horaRaw.length === 4) horaRaw = "0" + horaRaw;
-
-                        let horasOcupadas = dbCitas.febrero.horas_ocupadas[cita.dia.toString()] || [];
-                        if (horasOcupadas.includes(horaRaw)) {
-                            respuesta = `⚠️ La hora ${horaRaw} ya está cogida. Prueba otra.`;
-                        } else {
-                            cita.hora = horaRaw;
-                            respuesta = `Anotado: ${cita.dia} de Febrero a las ${cita.hora}. ¿Cuál es el motivo?`;
-                            paso = 3;
-                        }
+                        botTalk("Dime una hora válida (ej: 09:30 o 0930).");
+                        return;
                     }
+                    
+                    let horaRaw = horaMatch[0];
+                    if (!horaRaw.includes(":")) {
+                        // Convertir 930 a 09:30
+                        if (horaRaw.length === 3) horaRaw = "0" + horaRaw;
+                        if (horaRaw.length === 4) horaRaw = horaRaw.slice(0,2) + ":" + horaRaw.slice(2);
+                    }
+                    
+                    let horasOcupadas = dbCitas.febrero.horas_ocupadas[cita.dia.toString()] || [];
+                    if (horasOcupadas.includes(horaRaw)) {
+                        botTalk(`⚠️ La hora <strong>${horaRaw}</strong> ya está cogida. Prueba otra.`);
+                        return;
+                    }
+                    
+                    cita.hora = horaRaw;
+                    botTalk(`Perfecto: <strong>${cita.dia} de Febrero a las ${cita.hora}</strong>. ¿Cuáles son tus síntomas? (o "sin síntomas")`);
+                    paso = 3;
                     break;
 
-                case 3: // MOTIVO
-                    if (texto.length < 4) {
-                        respuesta = "Por favor, especifica un poco más el motivo.";
+                case 3: // SÍNTOMAS
+                    if (txt === 'sin sintomas' || txt === 'ninguno' || txt === 'no tengo' || txt === 'nada') {
+                        cita.sintomas = "Sin especificar";
+                    } else if (texto.length < 4) {
+                        botTalk("Por favor, especifica un poco más tus síntomas o di 'sin síntomas'.");
+                        return;
                     } else {
-                        cita.motivo = texto;
-                        respuesta = `📝 Resumen: Cita el **${cita.dia} de Febrero** a las **${cita.hora}** por **"${cita.motivo}"**. ¿Es correcto? (Sí/No)`;
-                        paso = 4;
+                        cita.sintomas = texto.substring(0, 200); // Limitar longitud
                     }
+                    
+                    botTalk(`📝 <strong>Resumen:</strong><br>
+                            📅 Cita el <strong>${cita.dia} de Febrero</strong> a las <strong>${cita.hora}</strong><br>
+                            💬 Síntomas: <strong>${cita.sintomas}</strong><br><br>
+                            ¿Es correcto? (Sí/No)`);
+                    paso = 4;
                     break;
 
                 case 4: // CONFIRMACIÓN
-                    if (txt.includes("s") || txt.includes("ok") || txt.includes("claro")) {
-                        respuesta = "🎉 ¡Perfecto! Tu cita ha sido confirmada.";
-                        console.log("INSERTANDO EN DB:", cita);
-                        paso = 5; 
+                    if (txt.includes("sí") || txt === "si" || txt.includes("ok") || txt.includes("claro") || txt.includes("vale") || txt.includes("correcto") || txt.includes("confirmar")) {
+                        botTalk("🎉 ¡Perfecto! Tu cita ha sido confirmada. Recibirás un email de confirmación.");
+                        console.log("CITA CONFIRMADA:", cita);
+                        
+                        // Simulación de guardado
+                        setTimeout(() => {
+                            botTalk("✅ Cita guardada en el sistema. ¡Hasta pronto!");
+                            paso = 5;
+                        }, 1500);
+                    } else if (txt.includes("no")) {
+                        botTalk("Vale, empecemos de nuevo. ¿Para qué mes quieres pedir cita?");
+                        resetBot();
                     } else {
-                        respuesta = "Vaya, empecemos de nuevo. ¿Qué mes querías?";
-                        paso = 0;
+                        botTalk('No te he entendido. Responde "Sí" para confirmar o "No" para cancelar.');
                     }
                     break;
 
                 default:
-                    respuesta = "Ya tienes tu cita cerrada. Recarga la página.";
+                    botTalk("Ya tienes tu cita cerrada. Recarga la página si quieres pedir otra.");
             }
-
-            botTalk(respuesta);
         }
 
-        function botTalk(texto) { addMessage(texto, 'bot'); botHabla(texto.replace(/\*|✅|❌|⚠️|📅|📝|🎉/g, '')); }
+        function resetBot() {
+            paso = 0;
+            cita = { mes: "", dia: "", hora: "", sintomas: "" };
+            botTalk(`Empecemos de nuevo. ¿Para qué mes quieres pedir cita?`);
+        }
+
+        function botTalk(texto) { 
+            addMessage(texto, 'bot'); 
+            // Limpiar HTML y emojis para TTS
+            const textoLimpio = texto.replace(/<[^>]*>/g, '').replace(/[✅❌⚠️📅📝🎉💬]/g, '');
+            botHabla(textoLimpio); 
+        }
+        
         function addMessage(texto, sender) {
             const body = document.getElementById("chatBody");
-            const div = document.createElement("div"); div.className = `msg ${sender}`; div.innerHTML = texto;
+            const div = document.createElement("div"); 
+            div.className = `msg ${sender}`; 
+            div.innerHTML = texto;
             body.appendChild(div);
             body.scrollTop = body.scrollHeight;
+        }
+        
+        function setHora(h) {
+            document.getElementById("chatInput").value = h;
+            sendMessage();
         }
     </script>
 </body>
